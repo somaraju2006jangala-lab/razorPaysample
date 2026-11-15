@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Lock,
@@ -17,6 +17,7 @@ import {
   X,
   ChevronRight,
   Info,
+  RefreshCw,
 } from 'lucide-react';
 import { useOrderState } from '../hooks/useOrderState.ts';
 import { PaymentApiService } from '../services/api.ts';
@@ -38,12 +39,11 @@ export const CheckoutLaunchPage: React.FC = () => {
   const [rzpOrder, setRzpOrder] = useState<RazorpayOrderResponse | null>(null);
   const [showSimulatedModal, setShowSimulatedModal] = useState(false);
   const [activeSimMethod, setActiveSimMethod] = useState<'upi' | 'card' | 'netbanking'>('upi');
-  const launchAttempted = useRef(false);
+  const [wasDismissed, setWasDismissed] = useState(false);
 
   const selectedCategory = searchParams.get('method') || 'upi';
   const paramVpa = searchParams.get('vpa') || 'success@razorpay';
   const [selectedVpa, setSelectedVpa] = useState<string>(paramVpa);
-  const [customVpaInput, setCustomVpaInput] = useState<string>('');
 
   // Step 1: Initialize Order with Backend
   useEffect(() => {
@@ -94,6 +94,7 @@ export const CheckoutLaunchPage: React.FC = () => {
     }
 
     try {
+      setWasDismissed(false);
       const activeVpa = overrideVpa || selectedVpa || 'success@razorpay';
 
       const options: any = {
@@ -128,30 +129,25 @@ export const CheckoutLaunchPage: React.FC = () => {
           });
         },
         modal: {
+          backdropclose: false, // Prevent accidental dismissal when clicking outside
+          escape: true,
+          handleback: true,
+          confirm_close: true, // Ask confirmation before closing
           ondismiss: function () {
+            // User closed the popup window - keep them on this page with clear action to resume
+            console.log('Payment modal was closed by user');
+            setWasDismissed(true);
             PaymentApiService.reportFailure({
               freshcart_order_id: order.freshcart_order_id,
               razorpay_order_id: rzpOrder.razorpay_order_id,
               error_code: 'MODAL_DISMISSED',
               error_description: 'Customer dismissed payment window without paying.',
             });
-            navigate('/payment/failed', {
-              state: {
-                orderId: order.freshcart_order_id,
-                reason: 'Payment modal was dismissed before completion.',
-                errorCode: 'MODAL_DISMISSED',
-              },
-            });
           },
         },
       };
 
-      if (isTestMode) {
-        // Enforce UPI Collect flow in Test Mode:
-        // By default, Razorpay on mobile attempts Android UPI Intent (upi://pay), which invokes
-        // real banking apps (GPay, PhonePe) with a test merchant VPA not registered on NPCI.
-        // Restricting instruments to flows: ['collect'] enforces the official Razorpay test collect flow,
-        // allowing test VPAs (success@razorpay, failure@razorpay) to be processed cleanly.
+      if (isTestMode && selectedCategory === 'upi') {
         options.config = {
           display: {
             blocks: {
@@ -160,7 +156,6 @@ export const CheckoutLaunchPage: React.FC = () => {
                 instruments: [
                   {
                     method: 'upi',
-                    flows: ['collect'],
                   },
                 ],
               },
@@ -171,10 +166,7 @@ export const CheckoutLaunchPage: React.FC = () => {
             },
           },
         };
-
-        if (selectedCategory === 'upi') {
-          options.prefill.vpa = activeVpa;
-        }
+        options.prefill.vpa = activeVpa;
       }
 
       const rzp = new window.Razorpay(options);
@@ -202,17 +194,6 @@ export const CheckoutLaunchPage: React.FC = () => {
       setError(e.message || 'Error triggering Razorpay modal.');
     }
   };
-
-  // Attempt auto-launch once ready
-  useEffect(() => {
-    if (rzpOrder && !launchAttempted.current && !rzpOrder.is_simulated) {
-      launchAttempted.current = true;
-      const timer = setTimeout(() => {
-        launchRazorpayModal();
-      }, 500);
-      return () => clearTimeout(timer);
-    }
-  }, [rzpOrder]);
 
   // Fallback simulator handler ONLY used when backend is offline/dummy-key mode
   const handleSimulatedOfflineSuccess = () => {
@@ -247,19 +228,7 @@ export const CheckoutLaunchPage: React.FC = () => {
 
   const handleSimulatedDismiss = () => {
     setShowSimulatedModal(false);
-    PaymentApiService.reportFailure({
-      freshcart_order_id: order.freshcart_order_id,
-      razorpay_order_id: rzpOrder?.razorpay_order_id,
-      error_code: 'MODAL_DISMISSED',
-      error_description: 'Customer dismissed payment window without paying.',
-    });
-    navigate('/payment/failed', {
-      state: {
-        orderId: order.freshcart_order_id,
-        reason: 'Payment modal was dismissed before completion.',
-        errorCode: 'MODAL_DISMISSED',
-      },
-    });
+    setWasDismissed(true);
   };
 
   return (
@@ -343,7 +312,7 @@ export const CheckoutLaunchPage: React.FC = () => {
                 </div>
 
                 <p className="text-[11px] text-amber-800 leading-relaxed">
-                  UPI Intent (launching Google Pay / PhonePe) is disabled in Test Mode to prevent banking app rejection ("Invalid UPI ID"). Select your test VPA below:
+                  Select your test VPA below, then click the green button to open Razorpay Checkout:
                 </p>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
@@ -364,7 +333,7 @@ export const CheckoutLaunchPage: React.FC = () => {
                       <span>success@razorpay</span>
                     </div>
                     <span className="text-[10px] text-emerald-700 font-medium block mt-0.5">
-                      Simulates Instant Payment Approval
+                      Simulates Instant Approval
                     </span>
                   </button>
 
@@ -385,9 +354,22 @@ export const CheckoutLaunchPage: React.FC = () => {
                       <span>failure@razorpay</span>
                     </div>
                     <span className="text-[10px] text-red-600 font-medium block mt-0.5">
-                      Simulates Bank Payment Decline
+                      Simulates Bank Decline
                     </span>
                   </button>
+                </div>
+              </div>
+            )}
+
+            {/* Dismissed Notification (Non-blocking) */}
+            {wasDismissed && (
+              <div className="p-3.5 rounded-2xl bg-amber-50 border border-amber-200 text-left text-xs text-amber-900 flex items-start gap-2.5">
+                <Info className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                <div>
+                  <span className="font-bold text-amber-950 block">Payment Window Was Closed</span>
+                  <span className="text-[11px] text-amber-800">
+                    The checkout popup was dismissed without paying. Click the button below to reopen the Razorpay payment window.
+                  </span>
                 </div>
               </div>
             )}
