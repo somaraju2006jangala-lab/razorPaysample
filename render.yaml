@@ -17,3 +17,4 @@ services:
         value: ./data/freshcart_payments.db
       - key: ADMIN_USERNAME
         value: admin
+
