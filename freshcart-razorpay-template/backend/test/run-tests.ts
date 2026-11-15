@@ -149,6 +149,90 @@ async function runTests() {
     assert.strictEqual(savedTx.signature_verified, 1, 'Signature verified flag must be 1 in database');
   });
 
+  // 4b. Dedicated UPI ₹50 Test with success@razorpay
+  await test('UPI Test: ₹50 Payment using success@razorpay & Backend Verification', async () => {
+    const upiOrderId = `FC-UPI-SUCCESS-${Date.now()}`;
+    const createRes = await request('/api/orders/create', {
+      method: 'POST',
+      body: {
+        freshcart_order_id: upiOrderId,
+        amount: 50,
+        currency: 'INR',
+        customer: { name: 'UPI Test User', email: 'upitest@example.com', phone: '9876543210' },
+      },
+    });
+    assert.strictEqual(createRes.status, 201, 'UPI ₹50 order creation must succeed');
+    assert.strictEqual(createRes.data.data.amount, 50, 'Amount must be ₹50');
+    assert.strictEqual(createRes.data.data.amount_in_paise, 5000, 'Amount in paise must be 5000');
+
+    const rzpUpiOrderId = createRes.data.data.razorpay_order_id;
+    const upiPaymentId = `pay_upi_success_${Date.now()}`;
+
+    // Valid HMAC SHA-256 for success@razorpay
+    const sigText = `${rzpUpiOrderId}|${upiPaymentId}`;
+    const validUpiSig = crypto
+      .createHmac('sha256', config.razorpay.keySecret)
+      .update(sigText)
+      .digest('hex');
+
+    const verifyUpiRes = await request('/api/payments/verify', {
+      method: 'POST',
+      body: {
+        freshcart_order_id: upiOrderId,
+        razorpay_order_id: rzpUpiOrderId,
+        razorpay_payment_id: upiPaymentId,
+        razorpay_signature: validUpiSig,
+      },
+    });
+
+    assert.strictEqual(verifyUpiRes.status, 200, 'UPI ₹50 payment verification must succeed');
+    assert.strictEqual(verifyUpiRes.data.data.status, 'CAPTURED');
+    assert.strictEqual(verifyUpiRes.data.data.amount, 50);
+
+    const savedUpiTx = PaymentPersistenceService.getTransactionByPaymentId(upiPaymentId);
+    assert.ok(savedUpiTx, 'Transaction record must exist in DB');
+    assert.strictEqual(savedUpiTx.amount, 50);
+    assert.strictEqual(savedUpiTx.status, 'CAPTURED');
+    assert.strictEqual(savedUpiTx.razorpay_order_id, rzpUpiOrderId);
+  });
+
+  // 4c. Dedicated UPI ₹50 Test with failure@razorpay
+  await test('UPI Test: ₹50 Payment using failure@razorpay & Failure Logging', async () => {
+    const upiFailOrderId = `FC-UPI-FAIL-${Date.now()}`;
+    const createRes = await request('/api/orders/create', {
+      method: 'POST',
+      body: {
+        freshcart_order_id: upiFailOrderId,
+        amount: 50,
+        currency: 'INR',
+        customer: { name: 'UPI Fail User', email: 'upifail@example.com', phone: '9876543210' },
+      },
+    });
+    assert.strictEqual(createRes.status, 201, 'UPI ₹50 fail order creation must succeed');
+    const rzpUpiFailOrderId = createRes.data.data.razorpay_order_id;
+    const failPaymentId = `pay_upi_fail_${Date.now()}`;
+
+    const reportRes = await request('/api/payments/report-failure', {
+      method: 'POST',
+      body: {
+        freshcart_order_id: upiFailOrderId,
+        razorpay_order_id: rzpUpiFailOrderId,
+        razorpay_payment_id: failPaymentId,
+        error_code: 'BAD_REQUEST_ERROR',
+        error_description: 'Payment failed for test VPA failure@razorpay',
+      },
+    });
+
+    assert.strictEqual(reportRes.status, 200, 'Failure reporting must succeed');
+    assert.strictEqual(reportRes.data.order_status, 'FAILED');
+
+    const failedTx = PaymentPersistenceService.getTransactionByPaymentId(failPaymentId);
+    assert.ok(failedTx, 'Failed transaction record must exist in DB');
+    assert.strictEqual(failedTx.amount, 50);
+    assert.strictEqual(failedTx.status, 'FAILED');
+    assert.strictEqual(failedTx.error_code, 'BAD_REQUEST_ERROR');
+  });
+
   // 5. Duplicate Payment Prevention
   await test('Scenario 6: Duplicate Payment Request Protection (Idempotency)', async () => {
     const dupRes = await request('/api/orders/create', {

@@ -16,6 +16,7 @@ import {
   Wallet,
   X,
   ChevronRight,
+  Info,
 } from 'lucide-react';
 import { useOrderState } from '../hooks/useOrderState.ts';
 import { PaymentApiService } from '../services/api.ts';
@@ -40,6 +41,9 @@ export const CheckoutLaunchPage: React.FC = () => {
   const launchAttempted = useRef(false);
 
   const selectedCategory = searchParams.get('method') || 'upi';
+  const paramVpa = searchParams.get('vpa') || 'success@razorpay';
+  const [selectedVpa, setSelectedVpa] = useState<string>(paramVpa);
+  const [customVpaInput, setCustomVpaInput] = useState<string>('');
 
   // Step 1: Initialize Order with Backend
   useEffect(() => {
@@ -71,8 +75,12 @@ export const CheckoutLaunchPage: React.FC = () => {
     };
   }, [order]);
 
+  const isTestMode = rzpOrder
+    ? rzpOrder.payment_mode === 'test' || rzpOrder.key_id?.startsWith('rzp_test_')
+    : true;
+
   // Launch Razorpay Standard Checkout
-  const launchRazorpayModal = () => {
+  const launchRazorpayModal = (overrideVpa?: string) => {
     if (!rzpOrder) return;
 
     if (rzpOrder.is_simulated) {
@@ -86,7 +94,9 @@ export const CheckoutLaunchPage: React.FC = () => {
     }
 
     try {
-      const options = {
+      const activeVpa = overrideVpa || selectedVpa || 'success@razorpay';
+
+      const options: any = {
         key: rzpOrder.key_id,
         amount: rzpOrder.amount_in_paise,
         currency: rzpOrder.currency,
@@ -107,7 +117,7 @@ export const CheckoutLaunchPage: React.FC = () => {
           color: '#00D084',
         },
         handler: function (response: any) {
-          // Send to cryptographic signature verification
+          // Send to cryptographic signature verification on backend
           navigate('/processing', {
             state: {
               freshcart_order_id: order.freshcart_order_id,
@@ -129,11 +139,43 @@ export const CheckoutLaunchPage: React.FC = () => {
               state: {
                 orderId: order.freshcart_order_id,
                 reason: 'Payment modal was dismissed before completion.',
+                errorCode: 'MODAL_DISMISSED',
               },
             });
           },
         },
       };
+
+      if (isTestMode) {
+        // Enforce UPI Collect flow in Test Mode:
+        // By default, Razorpay on mobile attempts Android UPI Intent (upi://pay), which invokes
+        // real banking apps (GPay, PhonePe) with a test merchant VPA not registered on NPCI.
+        // Restricting instruments to flows: ['collect'] enforces the official Razorpay test collect flow,
+        // allowing test VPAs (success@razorpay, failure@razorpay) to be processed cleanly.
+        options.config = {
+          display: {
+            blocks: {
+              upi: {
+                name: 'Pay using UPI (Test Mode)',
+                instruments: [
+                  {
+                    method: 'upi',
+                    flows: ['collect'],
+                  },
+                ],
+              },
+            },
+            sequence: ['block.upi'],
+            preferences: {
+              show_default_blocks: true,
+            },
+          },
+        };
+
+        if (selectedCategory === 'upi') {
+          options.prefill.vpa = activeVpa;
+        }
+      }
 
       const rzp = new window.Razorpay(options);
 
@@ -172,8 +214,8 @@ export const CheckoutLaunchPage: React.FC = () => {
     }
   }, [rzpOrder]);
 
-  // Test Mode Simulation Handlers
-  const handleSimulatedSuccess = () => {
+  // Fallback simulator handler ONLY used when backend is offline/dummy-key mode
+  const handleSimulatedOfflineSuccess = () => {
     if (!rzpOrder) return;
     const testPaymentId = `pay_sim_${Math.random().toString(36).substring(2, 10)}`;
     navigate('/processing', {
@@ -186,7 +228,7 @@ export const CheckoutLaunchPage: React.FC = () => {
     });
   };
 
-  const handleSimulatedFailure = () => {
+  const handleSimulatedOfflineFailure = () => {
     if (!rzpOrder) return;
     PaymentApiService.reportFailure({
       freshcart_order_id: order.freshcart_order_id,
@@ -203,16 +245,6 @@ export const CheckoutLaunchPage: React.FC = () => {
     });
   };
 
-  const handleSimulatedPending = () => {
-    if (!rzpOrder) return;
-    navigate('/payment/pending', {
-      state: {
-        orderId: order.freshcart_order_id,
-        razorpayOrderId: rzpOrder.razorpay_order_id,
-      },
-    });
-  };
-
   const handleSimulatedDismiss = () => {
     setShowSimulatedModal(false);
     PaymentApiService.reportFailure({
@@ -225,6 +257,7 @@ export const CheckoutLaunchPage: React.FC = () => {
       state: {
         orderId: order.freshcart_order_id,
         reason: 'Payment modal was dismissed before completion.',
+        errorCode: 'MODAL_DISMISSED',
       },
     });
   };
@@ -277,7 +310,14 @@ export const CheckoutLaunchPage: React.FC = () => {
             </div>
 
             <div className="space-y-2">
-              <h2 className="text-2xl font-extrabold text-slate-900">Razorpay Checkout Ready</h2>
+              <div className="flex items-center justify-center gap-2">
+                <h2 className="text-2xl font-extrabold text-slate-900">Razorpay Checkout Ready</h2>
+                {isTestMode && (
+                  <span className="text-[10px] uppercase font-bold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200">
+                    Test Mode
+                  </span>
+                )}
+              </div>
               <p className="text-xs text-slate-500 max-w-md mx-auto">
                 Razorpay Order ID: <span className="font-mono font-semibold text-slate-800">{rzpOrder?.razorpay_order_id}</span>
               </p>
@@ -289,58 +329,82 @@ export const CheckoutLaunchPage: React.FC = () => {
               <span className="text-base font-extrabold text-slate-900">₹{order.total_payable.toFixed(2)}</span>
             </div>
 
+            {/* Test Mode UPI Flow Guidance */}
+            {isTestMode && selectedCategory === 'upi' && (
+              <div className="p-4 rounded-2xl bg-amber-50/70 border border-amber-200 text-left space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-amber-900 flex items-center gap-1.5">
+                    <Sparkles className="w-4 h-4 text-amber-600" />
+                    Official Razorpay Test UPI Options
+                  </span>
+                  <span className="text-[10px] text-amber-700 bg-amber-100 px-2 py-0.5 rounded-md font-medium">
+                    Collect Flow Only
+                  </span>
+                </div>
+
+                <p className="text-[11px] text-amber-800 leading-relaxed">
+                  UPI Intent (launching Google Pay / PhonePe) is disabled in Test Mode to prevent banking app rejection ("Invalid UPI ID"). Select your test VPA below:
+                </p>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedVpa('success@razorpay');
+                      launchRazorpayModal('success@razorpay');
+                    }}
+                    className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                      selectedVpa === 'success@razorpay'
+                        ? 'border-emerald-600 bg-white shadow-sm ring-1 ring-emerald-600'
+                        : 'border-amber-200 bg-amber-50 hover:bg-white text-slate-700'
+                    }`}
+                  >
+                    <div className="flex items-center gap-1.5 text-xs font-bold text-slate-900">
+                      <CheckCircle className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                      <span>success@razorpay</span>
+                    </div>
+                    <span className="text-[10px] text-emerald-700 font-medium block mt-0.5">
+                      Simulates Instant Payment Approval
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedVpa('failure@razorpay');
+                      launchRazorpayModal('failure@razorpay');
+                    }}
+                    className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                      selectedVpa === 'failure@razorpay'
+                        ? 'border-red-500 bg-white shadow-sm ring-1 ring-red-500'
+                        : 'border-amber-200 bg-amber-50 hover:bg-white text-slate-700'
+                    }`}
+                  >
+                    <div className="flex items-center gap-1.5 text-xs font-bold text-slate-900">
+                      <XCircle className="w-3.5 h-3.5 text-red-600 shrink-0" />
+                      <span>failure@razorpay</span>
+                    </div>
+                    <span className="text-[10px] text-red-600 font-medium block mt-0.5">
+                      Simulates Bank Payment Decline
+                    </span>
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* Launch Modal Action */}
             <button
-              onClick={launchRazorpayModal}
+              onClick={() => launchRazorpayModal()}
               className="w-full py-4 rounded-2xl bg-[#00D084] hover:bg-emerald-500 text-slate-950 font-bold text-sm shadow-lg shadow-emerald-500/25 hover:shadow-xl transition-all cursor-pointer flex items-center justify-center gap-2"
             >
               <Lock className="w-4 h-4" />
               <span>Open Razorpay Checkout Popup</span>
             </button>
-
-            {/* Quick Test Simulator Controls */}
-            <div className="mt-8 pt-6 border-t border-slate-100 text-left space-y-3">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
-                  <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-                  Direct Simulator Actions
-                </span>
-                <span className="text-[10px] uppercase font-bold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200">
-                  Dev Mode
-                </span>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-1">
-                <button
-                  onClick={handleSimulatedSuccess}
-                  className="p-3 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-xs font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
-                >
-                  <CheckCircle className="w-4 h-4 text-emerald-600" />
-                  <span>Simulate Success</span>
-                </button>
-
-                <button
-                  onClick={handleSimulatedFailure}
-                  className="p-3 rounded-xl bg-red-50 hover:bg-red-100 text-red-800 border border-red-200 text-xs font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
-                >
-                  <XCircle className="w-4 h-4 text-red-600" />
-                  <span>Simulate Decline</span>
-                </button>
-
-                <button
-                  onClick={handleSimulatedPending}
-                  className="p-3 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 text-xs font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
-                >
-                  <Clock className="w-4 h-4 text-amber-600" />
-                  <span>Simulate Pending</span>
-                </button>
-              </div>
-            </div>
           </div>
         )}
       </div>
 
-      {/* Interactive Razorpay Checkout Modal Simulator (Displays when in Demo Mode) */}
+      {/* Offline Dummy Mode Simulator Modal (Only shows if backend is running in offline dummy mode) */}
       {showSimulatedModal && (
         <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-3xl max-w-md w-full overflow-hidden shadow-2xl border border-slate-200 animate-in fade-in zoom-in-95 duration-200">
@@ -374,14 +438,14 @@ export const CheckoutLaunchPage: React.FC = () => {
               </div>
             </div>
 
-            {/* Test Simulation Notice */}
+            {/* Offline Test Simulation Notice */}
             <div className="bg-amber-50 border-b border-amber-200 px-4 py-2 text-[11px] text-amber-900 font-semibold flex items-center justify-between">
               <span className="flex items-center gap-1.5">
                 <Sparkles className="w-3.5 h-3.5 text-amber-600" />
-                Razorpay Checkout Simulator
+                Razorpay Checkout Simulator (Offline Dummy Key Mode)
               </span>
               <span className="text-[10px] bg-amber-200 text-amber-950 px-2 py-0.5 rounded-full font-bold">
-                Test Mode
+                Offline Demo
               </span>
             </div>
 
@@ -437,8 +501,8 @@ export const CheckoutLaunchPage: React.FC = () => {
               <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-100 text-xs text-slate-600">
                 {activeSimMethod === 'upi' && (
                   <div className="space-y-1">
-                    <span className="font-bold text-slate-800 block">UPI Fast Pay (GPay / PhonePe)</span>
-                    <p className="text-[11px] text-slate-500">Virtual Payment Address: {order.customer.phone}@upi</p>
+                    <span className="font-bold text-slate-800 block">UPI Collect (Test Mode)</span>
+                    <p className="text-[11px] text-slate-500">Virtual Payment Address: success@razorpay</p>
                   </div>
                 )}
                 {activeSimMethod === 'card' && (
@@ -459,19 +523,19 @@ export const CheckoutLaunchPage: React.FC = () => {
               <div className="pt-2 space-y-2">
                 <button
                   type="button"
-                  onClick={handleSimulatedSuccess}
+                  onClick={handleSimulatedOfflineSuccess}
                   className="w-full py-3.5 rounded-2xl bg-[#00D084] hover:bg-emerald-500 text-slate-950 font-bold text-sm shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer"
                 >
                   <Lock className="w-4 h-4" />
-                  <span>Pay ₹{order.total_payable.toFixed(2)} Securely</span>
+                  <span>Simulate Success (₹{order.total_payable.toFixed(2)})</span>
                 </button>
 
                 <button
                   type="button"
-                  onClick={handleSimulatedFailure}
+                  onClick={handleSimulatedOfflineFailure}
                   className="w-full py-2.5 rounded-2xl bg-white hover:bg-red-50 text-red-600 font-semibold text-xs border border-red-200 transition-colors cursor-pointer"
                 >
-                  Simulate Bank Decline / Insufficient Funds
+                  Simulate Bank Decline / Failure
                 </button>
               </div>
 
