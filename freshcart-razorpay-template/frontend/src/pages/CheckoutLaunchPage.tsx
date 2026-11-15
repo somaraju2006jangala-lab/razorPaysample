@@ -300,20 +300,37 @@ export const CheckoutLaunchPage: React.FC = () => {
 
             {/* Test Mode UPI Flow Guidance */}
             {isTestMode && selectedCategory === 'upi' && (
-              <div className="p-4 rounded-2xl bg-amber-50/70 border border-amber-200 text-left space-y-3">
+              <div className="p-5 rounded-2xl bg-amber-50/90 border border-amber-300 text-left space-y-3.5">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-amber-900 flex items-center gap-1.5">
+                  <span className="text-xs font-bold text-amber-950 flex items-center gap-1.5">
                     <Sparkles className="w-4 h-4 text-amber-600" />
-                    Official Razorpay Test UPI Options
+                    How UPI Testing Works in Razorpay Test Mode
                   </span>
-                  <span className="text-[10px] text-amber-700 bg-amber-100 px-2 py-0.5 rounded-md font-medium">
-                    Collect Flow Only
+                  <span className="text-[10px] text-amber-800 bg-amber-200/80 px-2 py-0.5 rounded-md font-bold">
+                    Test Mode (Sandbox)
                   </span>
                 </div>
 
-                <p className="text-[11px] text-amber-800 leading-relaxed">
-                  Select your test VPA below, then click the green button to open Razorpay Checkout:
-                </p>
+                <div className="bg-white/80 rounded-xl p-3 border border-amber-200 text-xs text-amber-900 space-y-1.5">
+                  <div className="flex items-start gap-2">
+                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-bold text-amber-950">Why your phone says "Invalid UPI ID":</span>
+                      <p className="mt-0.5 text-[11px] text-amber-800 leading-relaxed">
+                        In Test Mode, Razorpay is <strong>not connected to NPCI or real banks</strong>. Real banking apps (Google Pay, PhonePe, Paytm) will reject test QR codes and test VPAs with <em>"Invalid UPI ID"</em>, and <strong>no payment request will come to your real phone</strong>.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-1 text-xs text-slate-700">
+                  <span className="font-bold text-slate-900 block">3 Simple Steps to Complete Test Payment:</span>
+                  <ol className="list-decimal list-inside space-y-1 text-[11px] text-slate-600 pl-1">
+                    <li>Click the green button <strong>"Open Razorpay Checkout Popup"</strong> below.</li>
+                    <li>Inside the Razorpay popup, select <strong>UPI</strong> ➔ <strong>UPI ID / VPA</strong> (do NOT scan with real phone).</li>
+                    <li>Enter <code className="bg-emerald-100 text-emerald-900 font-bold px-1.5 py-0.5 rounded text-[11px]">success@razorpay</code> and click <strong>Pay Now</strong>.</li>
+                  </ol>
+                </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
                   <button
@@ -324,16 +341,16 @@ export const CheckoutLaunchPage: React.FC = () => {
                     }}
                     className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
                       selectedVpa === 'success@razorpay'
-                        ? 'border-emerald-600 bg-white shadow-sm ring-1 ring-emerald-600'
+                        ? 'border-emerald-600 bg-white shadow-sm ring-2 ring-emerald-500'
                         : 'border-amber-200 bg-amber-50 hover:bg-white text-slate-700'
                     }`}
                   >
                     <div className="flex items-center gap-1.5 text-xs font-bold text-slate-900">
-                      <CheckCircle className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                      <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
                       <span>success@razorpay</span>
                     </div>
-                    <span className="text-[10px] text-emerald-700 font-medium block mt-0.5">
-                      Simulates Instant Approval
+                    <span className="text-[10px] text-emerald-700 font-semibold block mt-0.5">
+                      ✓ Instant Success Simulation
                     </span>
                   </button>
 
@@ -345,16 +362,16 @@ export const CheckoutLaunchPage: React.FC = () => {
                     }}
                     className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
                       selectedVpa === 'failure@razorpay'
-                        ? 'border-red-500 bg-white shadow-sm ring-1 ring-red-500'
+                        ? 'border-red-500 bg-white shadow-sm ring-2 ring-red-500'
                         : 'border-amber-200 bg-amber-50 hover:bg-white text-slate-700'
                     }`}
                   >
                     <div className="flex items-center gap-1.5 text-xs font-bold text-slate-900">
-                      <XCircle className="w-3.5 h-3.5 text-red-600 shrink-0" />
+                      <XCircle className="w-4 h-4 text-red-600 shrink-0" />
                       <span>failure@razorpay</span>
                     </div>
-                    <span className="text-[10px] text-red-600 font-medium block mt-0.5">
-                      Simulates Bank Decline
+                    <span className="text-[10px] text-red-600 font-semibold block mt-0.5">
+                      ✗ Bank Decline Simulation
                     </span>
                   </button>
                 </div>
