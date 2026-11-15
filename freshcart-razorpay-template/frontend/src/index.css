@@ -1,0 +1,41 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --primary: #00D084;
+    --primary-neon: #00FF87;
+    --primary-dark: #059669;
+    --bg-surface: #FFFFFF;
+  }
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Pulse Glow Effect for Neon Accents */
+@keyframes neon-glow {
+  0%, 100% {
+    box-shadow: 0 0 15px rgba(0, 208, 132, 0.35);
+  }
+  50% {
+    box-shadow: 0 0 25px rgba(0, 255, 135, 0.6);
+  }
+}
+
+.glow-neon {
+  animation: neon-glow 3s infinite;
+}
+

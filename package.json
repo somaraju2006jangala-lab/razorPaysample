@@ -1,0 +1,15 @@
+{
+  "name": "freshcart-razorpay-template-root",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Root runner for Fresh-Cart Razorpay Payment Gateway Template",
+  "scripts": {
+    "start:backend": "cd freshcart-razorpay-template/backend && npm run dev",
+    "start:frontend": "cd freshcart-razorpay-template/frontend && npm run dev",
+    "test:backend": "cd freshcart-razorpay-template/backend && npm test",
+    "build:frontend": "cd freshcart-razorpay-template/frontend && npm run build",
+    "build:backend": "cd freshcart-razorpay-template/backend && npm run build",
+    "test": "npm run test:backend"
+  }
+}
+
