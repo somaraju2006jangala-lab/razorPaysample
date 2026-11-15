@@ -5,6 +5,7 @@
   "description": "Root runner for Fresh-Cart Razorpay Payment Gateway Template",
   "scripts": {
     "build": "cd freshcart-razorpay-template/backend && npm install --include=dev && npm run build",
+    "prestart": "cd freshcart-razorpay-template/backend && npm install --include=dev && npm run build",
     "start": "cd freshcart-razorpay-template/backend && npm start",
     "start:backend": "cd freshcart-razorpay-template/backend && npm run dev",
     "start:frontend": "cd freshcart-razorpay-template/frontend && npm run dev",

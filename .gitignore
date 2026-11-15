@@ -1,5 +1,5 @@
 node_modules
-dist
+freshcart-razorpay-template/frontend/dist
 data/*.db
 data/*.db-journal
 .env
