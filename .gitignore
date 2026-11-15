@@ -5,3 +5,7 @@ data/*.db-journal
 .env
 .env.local
 .DS_Store
+freshcart-razorpay-template/backend/data/
+backend/data/
+*.sqlite
+*.db
