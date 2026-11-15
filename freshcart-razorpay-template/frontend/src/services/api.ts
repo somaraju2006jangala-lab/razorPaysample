@@ -8,7 +8,7 @@ import {
   DashboardMetrics,
 } from '../types/payment.ts';
 
-const API_BASE = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '');
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || 'https://razorpaysample.onrender.com/api').replace(/\/$/, '');
 
 export class PaymentApiService {
   private static getHeaders(includeAuth = false): HeadersInit {
