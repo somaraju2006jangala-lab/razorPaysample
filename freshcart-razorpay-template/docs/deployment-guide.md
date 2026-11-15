@@ -135,3 +135,4 @@ git push -u origin main
 - **`freshcart-razorpay-template/frontend/src/services/api.ts`**: Dynamically reads `import.meta.env.VITE_API_BASE_URL` with `/api` fallback.
 - **`freshcart-razorpay-template/backend/src/app.ts`**: CORS configured to accept any `*.vercel.app` domain and `FRONTEND_URL`.
 - **`freshcart-razorpay-template/render.yaml`**: Infrastructure blueprint for Render.
+

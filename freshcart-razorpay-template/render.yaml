@@ -29,3 +29,4 @@ services:
         value: sqlite
       - key: DATABASE_PATH
         value: ./data/freshcart_payments.db
+
