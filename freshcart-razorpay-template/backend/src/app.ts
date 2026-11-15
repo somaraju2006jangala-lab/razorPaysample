@@ -61,6 +61,16 @@ app.use(express.urlencoded({ extended: true }));
 // Global Rate Limiting
 app.use('/api', apiLimiter);
 
+// Root Health Check for Render and Cloud Load Balancers
+app.get(['/', '/health'], (req, res) => {
+  res.status(200).json({
+    status: 'healthy',
+    service: 'Fresh-Cart Razorpay Payment Gateway',
+    mode: config.paymentMode,
+    timestamp: new Date().toISOString(),
+  });
+});
+
 // API Routes
 app.use('/api', routes);
 

@@ -14,18 +14,19 @@ catch (error) {
     process.exit(1);
 }
 // Start HTTP Server
-const server = app.listen(config.port, () => {
+const server = app.listen(config.port, '0.0.0.0', () => {
     console.log(`
   ==============================================================
   🥦 Fresh-Cart Razorpay Payment Gateway Server
   ==============================================================
   📡 Status: Running
+  🌐 Host: 0.0.0.0
   🌐 Port: ${config.port}
   🔒 Mode: ${config.paymentMode.toUpperCase()} MODE
   💳 Razorpay Key ID: ${config.razorpay.keyId}
   🛡️  Signature Verification: HMAC SHA-256 Enabled
   📦 Database: SQLite (${config.database.path})
-  🔗 API Base URL: http://localhost:${config.port}/api
+  🔗 API Base URL: http://0.0.0.0:${config.port}/api
   ==============================================================
   `);
 });
