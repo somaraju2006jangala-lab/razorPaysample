@@ -1,8 +1,12 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { OrderDetails } from '../types/payment.ts';
 
-export const DEFAULT_DEMO_ORDER: OrderDetails = {
-  freshcart_order_id: 'FC-DEMO-1001',
+const createOrderId = () => {
+  return `FC-${Date.now()}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+};
+
+const createDefaultOrder = (): OrderDetails => ({
+  freshcart_order_id: createOrderId(),
   product_amount: 1000,
   delivery_charge: 40,
   discount: 50,
@@ -20,34 +24,47 @@ export const DEFAULT_DEMO_ORDER: OrderDetails = {
   ],
   delivery_address: 'Flat 402, Green Meadows Apt, Indiranagar, Bengaluru, 560038',
   delivery_slot: 'Morning 7:00 AM - 9:00 AM (Fresh Express)',
-};
+});
 
 export function useOrderState() {
   const [order, setOrder] = useState<OrderDetails>(() => {
     const saved = sessionStorage.getItem('freshcart_current_order');
+
     if (saved) {
       try {
-        return JSON.parse(saved);
+        const parsed = JSON.parse(saved) as OrderDetails;
+        if (
+          parsed.freshcart_order_id &&
+          !parsed.freshcart_order_id.startsWith('FC-DEMO-')
+        ) {
+          return parsed;
+        }
       } catch {
-        return DEFAULT_DEMO_ORDER;
+        // Create a fresh order if stored data is invalid.
       }
     }
-    return DEFAULT_DEMO_ORDER;
+
+    const freshOrder = createDefaultOrder();
+    sessionStorage.setItem('freshcart_current_order', JSON.stringify(freshOrder));
+    return freshOrder;
   });
 
   const updateOrder = (newOrder: OrderDetails) => {
-    // Recompute total payable
-    const total = Math.max(0, newOrder.product_amount + newOrder.delivery_charge - newOrder.discount);
+    const total = Math.max(
+      0,
+      newOrder.product_amount + newOrder.delivery_charge - newOrder.discount
+    );
+
     const updated = { ...newOrder, total_payable: total };
     setOrder(updated);
     sessionStorage.setItem('freshcart_current_order', JSON.stringify(updated));
   };
 
   const resetOrder = () => {
-    setOrder(DEFAULT_DEMO_ORDER);
-    sessionStorage.setItem('freshcart_current_order', JSON.stringify(DEFAULT_DEMO_ORDER));
+    const freshOrder = createDefaultOrder();
+    setOrder(freshOrder);
+    sessionStorage.setItem('freshcart_current_order', JSON.stringify(freshOrder));
   };
 
   return { order, updateOrder, resetOrder };
 }
-
