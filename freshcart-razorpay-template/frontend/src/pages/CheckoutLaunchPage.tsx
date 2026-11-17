@@ -42,8 +42,6 @@ export const CheckoutLaunchPage: React.FC = () => {
   const [wasDismissed, setWasDismissed] = useState(false);
 
   const selectedCategory = searchParams.get('method') || 'upi';
-  const paramVpa = searchParams.get('vpa') || 'success@razorpay';
-  const [selectedVpa, setSelectedVpa] = useState<string>(paramVpa);
 
   // Step 1: Initialize Order with Backend
   useEffect(() => {
@@ -80,7 +78,7 @@ export const CheckoutLaunchPage: React.FC = () => {
     : true;
 
   // Launch Razorpay Standard Checkout
-  const launchRazorpayModal = (overrideVpa?: string) => {
+  const launchRazorpayModal = () => {
     if (!rzpOrder) return;
 
     if (rzpOrder.is_simulated) {
@@ -95,7 +93,6 @@ export const CheckoutLaunchPage: React.FC = () => {
 
     try {
       setWasDismissed(false);
-      const activeVpa = overrideVpa || selectedVpa || 'success@razorpay';
 
       const options: any = {
         key: rzpOrder.key_id,
@@ -146,28 +143,6 @@ export const CheckoutLaunchPage: React.FC = () => {
           },
         },
       };
-
-      if (isTestMode && selectedCategory === 'upi') {
-        options.config = {
-          display: {
-            blocks: {
-              upi: {
-                name: 'Pay using UPI (Test Mode)',
-                instruments: [
-                  {
-                    method: 'upi',
-                  },
-                ],
-              },
-            },
-            sequence: ['block.upi'],
-            preferences: {
-              show_default_blocks: true,
-            },
-          },
-        };
-        options.prefill.vpa = activeVpa;
-      }
 
       const rzp = new window.Razorpay(options);
 
@@ -298,85 +273,50 @@ export const CheckoutLaunchPage: React.FC = () => {
               <span className="text-base font-extrabold text-slate-900">₹{order.total_payable.toFixed(2)}</span>
             </div>
 
-            {/* Test Mode UPI Flow Guidance */}
-            {isTestMode && selectedCategory === 'upi' && (
-              <div className="p-5 rounded-2xl bg-amber-50/90 border border-amber-300 text-left space-y-3.5">
+            {/* Gateway Information Badge */}
+            {isTestMode ? (
+              <div className="p-4 rounded-2xl bg-amber-50 border border-amber-200 text-left space-y-2 text-xs">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-amber-950 flex items-center gap-1.5">
+                  <span className="font-bold text-amber-950 flex items-center gap-1.5">
                     <Sparkles className="w-4 h-4 text-amber-600" />
-                    How UPI Testing Works in Razorpay Test Mode
+                    Razorpay Test Mode Active
                   </span>
-                  <span className="text-[10px] text-amber-800 bg-amber-200/80 px-2 py-0.5 rounded-md font-bold">
-                    Test Mode (Sandbox)
+                  <span className="text-[10px] bg-amber-200/90 text-amber-900 px-2 py-0.5 rounded-full font-bold">
+                    Sandbox
                   </span>
                 </div>
-
-                <div className="bg-white/80 rounded-xl p-3 border border-amber-200 text-xs text-amber-900 space-y-1.5">
-                  <div className="flex items-start gap-2">
-                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-                    <div>
-                      <span className="font-bold text-amber-950">Why your phone says "Invalid UPI ID":</span>
-                      <p className="mt-0.5 text-[11px] text-amber-800 leading-relaxed">
-                        In Test Mode, Razorpay is <strong>not connected to NPCI or real banks</strong>. Real banking apps (Google Pay, PhonePe, Paytm) will reject test QR codes and test VPAs with <em>"Invalid UPI ID"</em>, and <strong>no payment request will come to your real phone</strong>.
-                      </p>
-                    </div>
-                  </div>
+                <p className="text-[11px] text-amber-800 leading-relaxed">
+                  Test transactions simulate payments without deducting money. Inside the Razorpay popup, use the official test flow (<code className="bg-amber-100 px-1 py-0.5 rounded font-mono font-bold">success@razorpay</code> or simulated cards).
+                </p>
+              </div>
+            ) : (
+              <div className="p-4 rounded-2xl bg-emerald-50/70 border border-emerald-200 text-left space-y-2 text-xs">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-emerald-950 flex items-center gap-1.5">
+                    <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                    Razorpay Live Payments Active
+                  </span>
+                  <span className="text-[10px] bg-emerald-200 text-emerald-900 px-2 py-0.5 rounded-full font-bold">
+                    Production
+                  </span>
                 </div>
-
-                <div className="space-y-1 text-xs text-slate-700">
-                  <span className="font-bold text-slate-900 block">3 Simple Steps to Complete Test Payment:</span>
-                  <ol className="list-decimal list-inside space-y-1 text-[11px] text-slate-600 pl-1">
-                    <li>Click the green button <strong>"Open Razorpay Checkout Popup"</strong> below.</li>
-                    <li>Inside the Razorpay popup, select <strong>UPI</strong> ➔ <strong>UPI ID / VPA</strong> (do NOT scan with real phone).</li>
-                    <li>Enter <code className="bg-emerald-100 text-emerald-900 font-bold px-1.5 py-0.5 rounded text-[11px]">success@razorpay</code> and click <strong>Pay Now</strong>.</li>
-                  </ol>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSelectedVpa('success@razorpay');
-                      launchRazorpayModal('success@razorpay');
-                    }}
-                    className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
-                      selectedVpa === 'success@razorpay'
-                        ? 'border-emerald-600 bg-white shadow-sm ring-2 ring-emerald-500'
-                        : 'border-amber-200 bg-amber-50 hover:bg-white text-slate-700'
-                    }`}
-                  >
-                    <div className="flex items-center gap-1.5 text-xs font-bold text-slate-900">
-                      <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
-                      <span>success@razorpay</span>
-                    </div>
-                    <span className="text-[10px] text-emerald-700 font-semibold block mt-0.5">
-                      ✓ Instant Success Simulation
-                    </span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSelectedVpa('failure@razorpay');
-                      launchRazorpayModal('failure@razorpay');
-                    }}
-                    className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
-                      selectedVpa === 'failure@razorpay'
-                        ? 'border-red-500 bg-white shadow-sm ring-2 ring-red-500'
-                        : 'border-amber-200 bg-amber-50 hover:bg-white text-slate-700'
-                    }`}
-                  >
-                    <div className="flex items-center gap-1.5 text-xs font-bold text-slate-900">
-                      <XCircle className="w-4 h-4 text-red-600 shrink-0" />
-                      <span>failure@razorpay</span>
-                    </div>
-                    <span className="text-[10px] text-red-600 font-semibold block mt-0.5">
-                      ✗ Bank Decline Simulation
-                    </span>
-                  </button>
-                </div>
+                <p className="text-[11px] text-emerald-800 leading-relaxed">
+                  Real bank settlement enabled. Pay with Google Pay, PhonePe, Paytm, dynamic QR scan, or Cards.
+                </p>
               </div>
             )}
+
+            {/* Supported Payment Instruments Pill */}
+            <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
+              {['UPI Intent (GPay / PhonePe / Paytm)', 'Scan & Pay QR', 'Cards', 'NetBanking'].map((badge) => (
+                <span
+                  key={badge}
+                  className="px-2.5 py-1 rounded-lg bg-slate-100 text-slate-700 text-[11px] font-medium border border-slate-200"
+                >
+                  {badge}
+                </span>
+              ))}
+            </div>
 
             {/* Dismissed Notification (Non-blocking) */}
             {wasDismissed && (

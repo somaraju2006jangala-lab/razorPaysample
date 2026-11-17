@@ -23,28 +23,39 @@ export const FailedPage: React.FC = () => {
   } | null;
 
   const orderId = state?.orderId || order.freshcart_order_id;
-  const reason = state?.reason || 'Transaction could not be authorized by your bank.';
   const errorCode = state?.errorCode || 'PAYMENT_FAILED';
+  const isDismissed = errorCode === 'MODAL_DISMISSED';
+  const reason = state?.reason || (isDismissed 
+    ? 'The payment window was closed before completion. No funds were debited.' 
+    : 'Transaction could not be authorized by your bank.');
 
   return (
     <div className="max-w-xl mx-auto py-8 space-y-6">
       <div className="bg-white rounded-3xl border border-slate-200/90 p-8 sm:p-10 shadow-sm text-center space-y-6">
-        {/* Red Failure Icon */}
+        {/* Red / Amber Icon */}
         <div className="relative w-20 h-20 mx-auto flex items-center justify-center">
-          <div className="absolute inset-0 rounded-full bg-red-400/20 animate-ping opacity-60" />
-          <div className="w-16 h-16 rounded-full bg-red-500 text-white flex items-center justify-center shadow-lg shadow-red-500/30">
+          <div className={`absolute inset-0 rounded-full animate-ping opacity-60 ${isDismissed ? 'bg-amber-400/20' : 'bg-red-400/20'}`} />
+          <div className={`w-16 h-16 rounded-full text-white flex items-center justify-center shadow-lg ${isDismissed ? 'bg-amber-500 shadow-amber-500/30' : 'bg-red-500 shadow-red-500/30'}`}>
             <XCircle className="w-9 h-9 stroke-[2.5]" />
           </div>
         </div>
 
         <div>
-          <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-red-50 text-red-800 border border-red-200 text-xs font-bold mb-2">
-            <ShieldAlert className="w-3.5 h-3.5 text-red-600" />
-            <span>Transaction Incomplete</span>
+          <div className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full border text-xs font-bold mb-2 ${
+            isDismissed 
+              ? 'bg-amber-50 text-amber-800 border-amber-200' 
+              : 'bg-red-50 text-red-800 border-red-200'
+          }`}>
+            <ShieldAlert className={`w-3.5 h-3.5 ${isDismissed ? 'text-amber-600' : 'text-red-600'}`} />
+            <span>{isDismissed ? 'Payment Cancelled' : 'Transaction Incomplete'}</span>
           </div>
-          <h1 className="text-3xl font-extrabold text-slate-900 tracking-tight">Payment Unsuccessful</h1>
+          <h1 className="text-3xl font-extrabold text-slate-900 tracking-tight">
+            {isDismissed ? 'Payment Not Completed' : 'Payment Unsuccessful'}
+          </h1>
           <p className="text-xs text-slate-500 mt-1">
-            We could not complete your grocery checkout payment.
+            {isDismissed 
+              ? 'The checkout popup was dismissed before authorizing payment. No charges were made.'
+              : 'We could not complete your grocery checkout payment.'}
           </p>
         </div>
 

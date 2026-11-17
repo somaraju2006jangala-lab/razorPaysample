@@ -103,8 +103,12 @@ export class RazorpayService {
             };
         }
         catch (error) {
-            if (config.paymentMode === 'test' && config.razorpay.isDummyKey) {
-                console.warn('⚠️ Initiating simulated refund for demo mode.');
+            if ((config.paymentMode === 'test' && config.razorpay.isDummyKey) ||
+                paymentId.startsWith('pay_TEST_') ||
+                paymentId.startsWith('pay_sim_') ||
+                paymentId.startsWith('pay_mock_') ||
+                paymentId.startsWith('pay_upi_')) {
+                console.warn('⚠️ Initiating simulated refund for test/mock payment.');
                 const simulatedRefundId = `rfnd_${Math.random().toString(36).substring(2, 12)}`;
                 return {
                     id: simulatedRefundId,

@@ -14,7 +14,7 @@ import {
   Info,
   Check,
   Sparkles,
-  AlertCircle,
+  QrCode,
 } from 'lucide-react';
 import { useOrderState } from '../hooks/useOrderState.ts';
 import { PaymentApiService } from '../services/api.ts';
@@ -25,44 +25,26 @@ export const PaymentSelectionPage: React.FC = () => {
   const navigate = useNavigate();
   const { order } = useOrderState();
 
-  const [paymentMode, setPaymentMode] = useState<'test' | 'live'>('test');
+  const [paymentMode, setPaymentMode] = useState<'test' | 'live'>('live');
   const [selectedCategory, setSelectedCategory] = useState<PaymentCategory>('upi');
-  const [selectedSubMethod, setSelectedSubMethod] = useState<string>('test_success');
-  const [selectedVpa, setSelectedVpa] = useState<string>('success@razorpay');
-  const [customVpa, setCustomVpa] = useState<string>('');
+  const [selectedSubMethod, setSelectedSubMethod] = useState<string>('upi_intent');
 
   useEffect(() => {
     PaymentApiService.checkHealth()
       .then((health) => {
-        if (health?.payment_mode === 'live') {
-          setPaymentMode('live');
-          setSelectedSubMethod('gpay');
-        } else {
+        if (health?.payment_mode === 'test') {
           setPaymentMode('test');
-          setSelectedSubMethod('test_success');
-          setSelectedVpa('success@razorpay');
+        } else {
+          setPaymentMode('live');
         }
       })
       .catch(() => {
-        setPaymentMode('test');
+        setPaymentMode('live');
       });
   }, []);
 
   const handleContinueToPay = () => {
-    let finalVpa = selectedVpa;
-    if (selectedSubMethod === 'custom_upi') {
-      finalVpa = customVpa.trim() || 'success@razorpay';
-    } else if (selectedSubMethod === 'test_success') {
-      finalVpa = 'success@razorpay';
-    } else if (selectedSubMethod === 'test_failure') {
-      finalVpa = 'failure@razorpay';
-    } else {
-      // Standard app selected in test mode defaults to success@razorpay
-      finalVpa = selectedVpa || 'success@razorpay';
-    }
-
-    const vpaParam = selectedCategory === 'upi' ? `&vpa=${encodeURIComponent(finalVpa)}` : '';
-    navigate(`/checkout/launch?method=${selectedCategory}&sub=${selectedSubMethod}${vpaParam}`);
+    navigate(`/checkout/launch?method=${selectedCategory}&sub=${selectedSubMethod}`);
   };
 
   return (
@@ -87,16 +69,21 @@ export const PaymentSelectionPage: React.FC = () => {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-        {/* Left Column: Custom Payment Selection Interface */}
+        {/* Left Column: Payment Selection Interface */}
         <div className="lg:col-span-8 space-y-6">
           <div className="bg-white rounded-3xl border border-slate-200/90 p-6 sm:p-8 shadow-sm">
             <div className="border-b border-slate-100 pb-4 mb-6">
               <div className="flex items-center justify-between">
                 <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">Select Payment Method</h1>
-                {paymentMode === 'test' && (
+                {paymentMode === 'test' ? (
                   <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-50 text-amber-800 border border-amber-200 text-[11px] font-bold">
                     <Sparkles className="w-3 h-3 text-amber-600" />
                     Razorpay Test Mode
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200 text-[11px] font-bold">
+                    <ShieldCheck className="w-3 h-3 text-emerald-600" />
+                    Razorpay Live Mode
                   </span>
                 )}
               </div>
@@ -111,12 +98,7 @@ export const PaymentSelectionPage: React.FC = () => {
               <div
                 onClick={() => {
                   setSelectedCategory('upi');
-                  if (paymentMode === 'test') {
-                    setSelectedSubMethod('test_success');
-                    setSelectedVpa('success@razorpay');
-                  } else {
-                    setSelectedSubMethod('gpay');
-                  }
+                  setSelectedSubMethod('upi_intent');
                 }}
                 className={`p-5 rounded-2xl border-2 transition-all cursor-pointer ${
                   selectedCategory === 'upi'
@@ -133,12 +115,12 @@ export const PaymentSelectionPage: React.FC = () => {
                     </div>
                     <div>
                       <div className="flex items-center gap-2">
-                        <span className="font-bold text-slate-900 text-sm">UPI (Google Pay, PhonePe, Paytm, BHIM)</span>
+                        <span className="font-bold text-slate-900 text-sm">UPI (Google Pay, PhonePe, Paytm, BHIM & QR)</span>
                         <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800">
                           Instant 0% Fee
                         </span>
                       </div>
-                      <p className="text-xs text-slate-500 mt-0.5">Pay directly from any bank via UPI Intent or UPI ID</p>
+                      <p className="text-xs text-slate-500 mt-0.5">Pay via native UPI Intent on mobile or scan QR Code on desktop</p>
                     </div>
                   </div>
 
@@ -149,116 +131,28 @@ export const PaymentSelectionPage: React.FC = () => {
                   </div>
                 </div>
 
-                {/* UPI Sub-options preview */}
+                {/* UPI Supported Apps Preview */}
                 {selectedCategory === 'upi' && (
-                  <div className="mt-4 pt-4 border-t border-emerald-100 space-y-3">
-                    {paymentMode === 'test' ? (
-                      <div className="space-y-3">
-                        <div className="bg-amber-50/80 border border-amber-200/90 rounded-xl p-3 text-xs text-amber-900 flex items-start gap-2">
-                          <Info className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-                          <div>
-                            <span className="font-bold">Test Mode UPI Collect Flow:</span>
-                            <p className="mt-0.5 text-[11px] text-amber-800 leading-relaxed">
-                              Real banking apps (Google Pay / PhonePe) will reject test UPI IDs with "Invalid UPI ID" because test accounts are not on the live NPCI switch. Use the official test UPI IDs below inside Razorpay Standard Checkout:
-                            </p>
-                          </div>
+                  <div className="mt-4 pt-4 border-t border-emerald-100">
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      {[
+                        { id: 'gpay', name: 'Google Pay', badge: 'UPI Intent' },
+                        { id: 'phonepe', name: 'PhonePe', badge: 'UPI Intent' },
+                        { id: 'paytm', name: 'Paytm UPI', badge: 'UPI Intent' },
+                        { id: 'qr', name: 'Dynamic QR', badge: 'Scan & Pay' },
+                      ].map((app) => (
+                        <div
+                          key={app.id}
+                          className="p-2.5 rounded-xl text-left border border-emerald-200/60 bg-white shadow-xs"
+                        >
+                          <span className="block text-xs font-bold text-slate-900">{app.name}</span>
+                          <span className="text-[10px] text-emerald-700 font-medium">{app.badge}</span>
                         </div>
-
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setSelectedSubMethod('test_success');
-                              setSelectedVpa('success@razorpay');
-                            }}
-                            className={`p-3 rounded-xl text-left border transition-all ${
-                              selectedSubMethod === 'test_success'
-                                ? 'border-emerald-600 bg-emerald-50/60 shadow-xs font-semibold'
-                                : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-600'
-                            }`}
-                          >
-                            <span className="block text-xs font-bold text-slate-900">success@razorpay</span>
-                            <span className="text-[10px] text-emerald-700 font-semibold block mt-0.5">✓ Simulated Success</span>
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setSelectedSubMethod('test_failure');
-                              setSelectedVpa('failure@razorpay');
-                            }}
-                            className={`p-3 rounded-xl text-left border transition-all ${
-                              selectedSubMethod === 'test_failure'
-                                ? 'border-red-500 bg-red-50/60 shadow-xs font-semibold'
-                                : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-600'
-                            }`}
-                          >
-                            <span className="block text-xs font-bold text-slate-900">failure@razorpay</span>
-                            <span className="text-[10px] text-red-600 font-semibold block mt-0.5">✗ Simulated Decline</span>
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setSelectedSubMethod('custom_upi');
-                            }}
-                            className={`p-3 rounded-xl text-left border transition-all ${
-                              selectedSubMethod === 'custom_upi'
-                                ? 'border-emerald-600 bg-white shadow-xs font-semibold'
-                                : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-600'
-                            }`}
-                          >
-                            <span className="block text-xs font-bold text-slate-900">Custom Test VPA</span>
-                            <span className="text-[10px] text-slate-500 block mt-0.5">Enter Custom ID</span>
-                          </button>
-                        </div>
-
-                        {selectedSubMethod === 'custom_upi' && (
-                          <div className="pt-2" onClick={(e) => e.stopPropagation()}>
-                            <label className="text-[11px] font-bold text-slate-700 block mb-1">
-                              Enter Test UPI ID:
-                            </label>
-                            <input
-                              type="text"
-                              value={customVpa}
-                              onChange={(e) => setCustomVpa(e.target.value)}
-                              placeholder="e.g. success@razorpay"
-                              className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs focus:outline-none focus:border-emerald-500 font-mono"
-                            />
-                          </div>
-                        )}
-                      </div>
-                    ) : (
-                      /* Live Mode Apps */
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                        {[
-                          { id: 'gpay', name: 'Google Pay', badge: 'UPI Intent' },
-                          { id: 'phonepe', name: 'PhonePe', badge: 'UPI Intent' },
-                          { id: 'paytm', name: 'Paytm UPI', badge: 'UPI Intent' },
-                          { id: 'other_upi', name: 'Other UPI ID', badge: '@vpa' },
-                        ].map((app) => (
-                          <button
-                            key={app.id}
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setSelectedSubMethod(app.id);
-                            }}
-                            className={`p-2.5 rounded-xl text-left border transition-all ${
-                              selectedSubMethod === app.id
-                                ? 'border-emerald-600 bg-white shadow-xs font-semibold'
-                                : 'border-slate-200 bg-white/70 hover:bg-white text-slate-600'
-                            }`}
-                          >
-                            <span className="block text-xs font-bold text-slate-900">{app.name}</span>
-                            <span className="text-[10px] text-slate-400">{app.badge}</span>
-                          </button>
-                        ))}
-                      </div>
-                    )}
+                      ))}
+                    </div>
+                    <p className="text-[11px] text-slate-500 mt-2.5">
+                      ✓ Instant app-switch on Android/iOS. No manual UPI ID typing required.
+                    </p>
                   </div>
                 )}
               </div>
@@ -425,9 +319,9 @@ export const PaymentSelectionPage: React.FC = () => {
             <div className="mt-6 p-4 rounded-2xl bg-slate-50 border border-slate-200/80 flex items-start gap-3 text-xs text-slate-600">
               <Info className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
               <div>
-                <span className="font-bold text-slate-800">Genuine Payment Gateway Integration:</span>
+                <span className="font-bold text-slate-800">Official Razorpay Checkout Integration:</span>
                 <p className="mt-0.5 leading-relaxed">
-                  Clicking "Pay Securely" connects directly to the backend to generate an official Razorpay order ID and opens Razorpay's standard checkout dialog with your selected preference.
+                  Clicking "Pay Securely" creates an official order token on the backend and launches Razorpay's standard checkout with native UPI Intent and QR support.
                 </p>
               </div>
             </div>
