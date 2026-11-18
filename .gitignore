@@ -9,3 +9,4 @@ freshcart-razorpay-template/backend/data/
 backend/data/
 *.sqlite
 *.db
+*.csv

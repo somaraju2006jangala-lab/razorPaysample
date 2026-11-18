@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Smartphone,
@@ -15,9 +15,12 @@ import {
   Check,
   Sparkles,
   QrCode,
+  Loader2,
+  AlertTriangle,
 } from 'lucide-react';
 import { useOrderState } from '../hooks/useOrderState.ts';
 import { PaymentApiService } from '../services/api.ts';
+import { loadRazorpaySdk } from '../utils/razorpayLoader.ts';
 
 type PaymentCategory = 'upi' | 'card' | 'netbanking' | 'wallet';
 
@@ -28,6 +31,10 @@ export const PaymentSelectionPage: React.FC = () => {
   const [paymentMode, setPaymentMode] = useState<'test' | 'live'>('live');
   const [selectedCategory, setSelectedCategory] = useState<PaymentCategory>('upi');
   const [selectedSubMethod, setSelectedSubMethod] = useState<string>('upi_intent');
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [dismissedNotice, setDismissedNotice] = useState(false);
+  const isSubmittingRef = useRef(false);
 
   useEffect(() => {
     PaymentApiService.checkHealth()
@@ -43,8 +50,113 @@ export const PaymentSelectionPage: React.FC = () => {
       });
   }, []);
 
-  const handleContinueToPay = () => {
-    navigate(`/checkout/launch?method=${selectedCategory}&sub=${selectedSubMethod}`);
+  const handleContinueToPay = async () => {
+    // Prevent duplicate payment requests from repeated clicks
+    if (isSubmittingRef.current || isProcessing) return;
+
+    try {
+      isSubmittingRef.current = true;
+      setIsProcessing(true);
+      setError(null);
+      setDismissedNotice(false);
+
+      // In parallel: ensure Razorpay SDK is loaded & request official order from backend
+      const [_, orderResponse] = await Promise.all([
+        loadRazorpaySdk().catch((err) => {
+          console.warn('Razorpay SDK loader note:', err);
+          return false;
+        }),
+        PaymentApiService.createOrder(order),
+      ]);
+
+      // If backend is in offline dummy mode, route to simulated checkout launcher
+      if (orderResponse.is_simulated) {
+        navigate(`/checkout/launch?method=${selectedCategory}&sub=${selectedSubMethod}`);
+        return;
+      }
+
+      // Verify Razorpay constructor is present
+      if (typeof window.Razorpay === 'undefined') {
+        throw new Error('Razorpay Checkout SDK failed to load. Please check your internet connection and try again.');
+      }
+
+      const options: any = {
+        key: orderResponse.key_id,
+        amount: orderResponse.amount_in_paise,
+        currency: orderResponse.currency,
+        name: 'Fresh-Cart Groceries',
+        description: `Order ${order.freshcart_order_id} • Total: ₹${order.total_payable}`,
+        order_id: orderResponse.razorpay_order_id,
+        prefill: {
+          name: order.customer.name,
+          email: order.customer.email,
+          contact: order.customer.phone,
+          method: selectedCategory,
+        },
+        notes: {
+          freshcart_order_id: order.freshcart_order_id,
+          delivery_slot: order.delivery_slot,
+        },
+        theme: {
+          color: '#00D084',
+        },
+        modal: {
+          backdropclose: false,
+          escape: true,
+          handleback: true,
+          confirm_close: true,
+          ondismiss: function () {
+            setIsProcessing(false);
+            isSubmittingRef.current = false;
+            setDismissedNotice(true);
+            PaymentApiService.reportFailure({
+              freshcart_order_id: order.freshcart_order_id,
+              razorpay_order_id: orderResponse.razorpay_order_id,
+              error_code: 'MODAL_DISMISSED',
+              error_description: 'Customer dismissed payment window without paying.',
+            });
+          },
+        },
+        handler: function (response: any) {
+          navigate('/processing', {
+            state: {
+              freshcart_order_id: order.freshcart_order_id,
+              razorpay_order_id: response.razorpay_order_id || orderResponse.razorpay_order_id,
+              razorpay_payment_id: response.razorpay_payment_id,
+              razorpay_signature: response.razorpay_signature,
+            },
+          });
+        },
+      };
+
+      const rzp = new window.Razorpay(options);
+
+      rzp.on('payment.failed', function (resp: any) {
+        setIsProcessing(false);
+        isSubmittingRef.current = false;
+        PaymentApiService.reportFailure({
+          freshcart_order_id: order.freshcart_order_id,
+          razorpay_order_id: orderResponse.razorpay_order_id,
+          razorpay_payment_id: resp.error?.metadata?.payment_id,
+          error_code: resp.error?.code || 'GATEWAY_ERROR',
+          error_description: resp.error?.description || 'Payment rejected by bank or issuer.',
+        });
+        navigate('/payment/failed', {
+          state: {
+            orderId: order.freshcart_order_id,
+            reason: resp.error?.description || 'Payment declined by bank.',
+            errorCode: resp.error?.code,
+          },
+        });
+      });
+
+      rzp.open();
+    } catch (err: any) {
+      console.error('Payment initiation error:', err);
+      setError(err.message || 'Failed to initiate payment. Please try again.');
+      setIsProcessing(false);
+      isSubmittingRef.current = false;
+    }
   };
 
   return (
@@ -370,12 +482,51 @@ export const PaymentSelectionPage: React.FC = () => {
               <span className="text-2xl text-slate-900">₹{order.total_payable.toFixed(2)}</span>
             </div>
 
+            {/* Error Message Notice */}
+            {error && (
+              <div className="p-3.5 rounded-2xl bg-red-50 border border-red-200 text-left text-xs text-red-900 flex items-start gap-2.5 animate-in fade-in">
+                <AlertTriangle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <span className="font-bold text-red-950 block">Unable to Connect to Gateway</span>
+                  <p className="text-[11px] text-red-800 leading-relaxed">{error}</p>
+                </div>
+              </div>
+            )}
+
+            {/* Dismissed Notification (Non-blocking) */}
+            {dismissedNotice && !error && (
+              <div className="p-3.5 rounded-2xl bg-amber-50 border border-amber-200 text-left text-xs text-amber-900 flex items-start gap-2.5 animate-in fade-in">
+                <Info className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                <div>
+                  <span className="font-bold text-amber-950 block">Payment Window Closed</span>
+                  <span className="text-[11px] text-amber-800">
+                    The payment window was dismissed without completing. No funds were debited. Click below to reopen.
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {/* Pay Securely Button with Instant Loading & Disabled State */}
             <button
               onClick={handleContinueToPay}
-              className="w-full py-4 rounded-2xl bg-[#00D084] hover:bg-emerald-500 text-slate-950 font-bold text-sm shadow-lg shadow-emerald-500/25 hover:shadow-xl transition-all duration-200 flex items-center justify-center gap-2 cursor-pointer"
+              disabled={isProcessing}
+              className={`w-full py-4 rounded-2xl font-bold text-sm shadow-lg transition-all duration-200 flex items-center justify-center gap-2 ${
+                isProcessing
+                  ? 'bg-emerald-400 text-slate-900 cursor-wait opacity-85 shadow-emerald-500/10'
+                  : 'bg-[#00D084] hover:bg-emerald-500 text-slate-950 shadow-emerald-500/25 hover:shadow-xl cursor-pointer'
+              }`}
             >
-              <Lock className="w-4 h-4" />
-              <span>Pay Securely ₹{order.total_payable.toFixed(2)}</span>
+              {isProcessing ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin text-slate-950" />
+                  <span>Connecting to Razorpay...</span>
+                </>
+              ) : (
+                <>
+                  <Lock className="w-4 h-4" />
+                  <span>Pay Securely ₹{order.total_payable.toFixed(2)}</span>
+                </>
+              )}
             </button>
 
             <div className="flex items-center justify-center gap-2 text-[11px] text-slate-400">

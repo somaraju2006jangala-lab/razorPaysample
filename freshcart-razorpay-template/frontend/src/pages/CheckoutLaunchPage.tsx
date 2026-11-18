@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Lock,
@@ -22,12 +22,7 @@ import {
 import { useOrderState } from '../hooks/useOrderState.ts';
 import { PaymentApiService } from '../services/api.ts';
 import { RazorpayOrderResponse } from '../types/payment.ts';
-
-declare global {
-  interface Window {
-    Razorpay: any;
-  }
-}
+import { loadRazorpaySdk } from '../utils/razorpayLoader.ts';
 
 export const CheckoutLaunchPage: React.FC = () => {
   const navigate = useNavigate();
@@ -40,10 +35,12 @@ export const CheckoutLaunchPage: React.FC = () => {
   const [showSimulatedModal, setShowSimulatedModal] = useState(false);
   const [activeSimMethod, setActiveSimMethod] = useState<'upi' | 'card' | 'netbanking'>('upi');
   const [wasDismissed, setWasDismissed] = useState(false);
+  const [isLaunching, setIsLaunching] = useState(false);
+  const autoLaunchRef = useRef(false);
 
   const selectedCategory = searchParams.get('method') || 'upi';
 
-  // Step 1: Initialize Order with Backend
+  // Step 1: Initialize Order with Backend & Preload SDK
   useEffect(() => {
     let isMounted = true;
 
@@ -51,7 +48,13 @@ export const CheckoutLaunchPage: React.FC = () => {
       try {
         setIsLoading(true);
         setError(null);
-        const orderResponse = await PaymentApiService.createOrder(order);
+
+        // Preload SDK in parallel with order creation
+        const [_, orderResponse] = await Promise.all([
+          loadRazorpaySdk().catch(() => false),
+          PaymentApiService.createOrder(order),
+        ]);
+
         if (isMounted) {
           setRzpOrder(orderResponse);
           setIsLoading(false);
@@ -79,7 +82,7 @@ export const CheckoutLaunchPage: React.FC = () => {
 
   // Launch Razorpay Standard Checkout
   const launchRazorpayModal = () => {
-    if (!rzpOrder) return;
+    if (!rzpOrder || isLaunching) return;
 
     if (rzpOrder.is_simulated) {
       setShowSimulatedModal(true);
@@ -92,6 +95,7 @@ export const CheckoutLaunchPage: React.FC = () => {
     }
 
     try {
+      setIsLaunching(true);
       setWasDismissed(false);
 
       const options: any = {
@@ -115,6 +119,7 @@ export const CheckoutLaunchPage: React.FC = () => {
           color: '#00D084',
         },
         handler: function (response: any) {
+          setIsLaunching(false);
           // Send to cryptographic signature verification on backend
           navigate('/processing', {
             state: {
@@ -131,7 +136,7 @@ export const CheckoutLaunchPage: React.FC = () => {
           handleback: true,
           confirm_close: true, // Ask confirmation before closing
           ondismiss: function () {
-            // User closed the popup window - keep them on this page with clear action to resume
+            setIsLaunching(false);
             console.log('Payment modal was closed by user');
             setWasDismissed(true);
             PaymentApiService.reportFailure({
@@ -147,6 +152,7 @@ export const CheckoutLaunchPage: React.FC = () => {
       const rzp = new window.Razorpay(options);
 
       rzp.on('payment.failed', function (resp: any) {
+        setIsLaunching(false);
         PaymentApiService.reportFailure({
           freshcart_order_id: order.freshcart_order_id,
           razorpay_order_id: rzpOrder.razorpay_order_id,
@@ -166,9 +172,22 @@ export const CheckoutLaunchPage: React.FC = () => {
       rzp.open();
     } catch (e: any) {
       console.error('Failed to open Razorpay modal:', e);
+      setIsLaunching(false);
       setError(e.message || 'Error triggering Razorpay modal.');
     }
   };
+
+  // Attempt auto-launch once ready
+  useEffect(() => {
+    if (rzpOrder && !rzpOrder.is_simulated && !autoLaunchRef.current) {
+      autoLaunchRef.current = true;
+      try {
+        launchRazorpayModal();
+      } catch (e) {
+        console.warn('Auto-launch blocked or interrupted:', e);
+      }
+    }
+  }, [rzpOrder]);
 
   // Fallback simulator handler ONLY used when backend is offline/dummy-key mode
   const handleSimulatedOfflineSuccess = () => {
@@ -334,10 +353,24 @@ export const CheckoutLaunchPage: React.FC = () => {
             {/* Launch Modal Action */}
             <button
               onClick={() => launchRazorpayModal()}
-              className="w-full py-4 rounded-2xl bg-[#00D084] hover:bg-emerald-500 text-slate-950 font-bold text-sm shadow-lg shadow-emerald-500/25 hover:shadow-xl transition-all cursor-pointer flex items-center justify-center gap-2"
+              disabled={isLaunching}
+              className={`w-full py-4 rounded-2xl font-bold text-sm shadow-lg transition-all flex items-center justify-center gap-2 ${
+                isLaunching
+                  ? 'bg-emerald-400 text-slate-900 cursor-wait opacity-85 shadow-emerald-500/10'
+                  : 'bg-[#00D084] hover:bg-emerald-500 text-slate-950 shadow-emerald-500/25 hover:shadow-xl cursor-pointer'
+              }`}
             >
-              <Lock className="w-4 h-4" />
-              <span>Open Razorpay Checkout Popup</span>
+              {isLaunching ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin text-slate-950" />
+                  <span>Opening Razorpay Checkout...</span>
+                </>
+              ) : (
+                <>
+                  <Lock className="w-4 h-4" />
+                  <span>Open Razorpay Checkout Popup</span>
+                </>
+              )}
             </button>
           </div>
         )}

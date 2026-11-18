@@ -9,8 +9,11 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
-    <!-- Razorpay Standard Checkout SDK -->
-    <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+    <!-- Preconnect & DNS-Prefetch for Razorpay Gateway CDN -->
+    <link rel="preconnect" href="https://checkout.razorpay.com" crossorigin>
+    <link rel="dns-prefetch" href="https://checkout.razorpay.com">
+    <!-- Razorpay Standard Checkout SDK (Async load to prevent blocking DOM render) -->
+    <script src="https://checkout.razorpay.com/v1/checkout.js" async></script>
   </head>
   <body class="bg-gray-50 text-slate-900 font-['Plus_Jakarta_Sans',sans-serif] antialiased selection:bg-emerald-500 selection:text-white">
     <div id="root"></div>

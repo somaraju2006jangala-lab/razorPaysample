@@ -50,6 +50,31 @@ export class OrderController {
         return;
       }
 
+      // Performance & Idempotency: If an active unpaid order already exists with the same amount,
+      // return it immediately to avoid duplicate external API roundtrips to Razorpay servers.
+      if (
+        existingOrder &&
+        existingOrder.status === 'CREATED' &&
+        existingOrder.razorpay_order_id &&
+        existingOrder.amount === amount
+      ) {
+        res.status(200).json({
+          success: true,
+          data: {
+            key_id: config.razorpay.keyId,
+            razorpay_order_id: existingOrder.razorpay_order_id,
+            freshcart_order_id,
+            amount: existingOrder.amount,
+            amount_in_paise: existingOrder.amount_in_paise,
+            currency: existingOrder.currency,
+            customer,
+            payment_mode: config.paymentMode,
+            is_simulated: existingOrder.razorpay_order_id.startsWith('order_sim_') || false,
+          },
+        });
+        return;
+      }
+
       // Create Razorpay order via official SDK
       const razorpayOrder = await RazorpayService.createOrder({
         amount,

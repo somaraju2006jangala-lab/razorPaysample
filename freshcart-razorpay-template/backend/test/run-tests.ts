@@ -247,6 +247,39 @@ async function runTests() {
     assert.strictEqual(dupRes.status, 409, 'Duplicate payment order creation must return 409 Conflict');
   });
 
+  // 5b. Rapid Duplicate Clicks on Unpaid Order (Fast Idempotency)
+  await test('Scenario 6b: Fast Order Token Reuse on Repeated Pay Button Clicks', async () => {
+    const rapidOrderId = `FC-RAPID-${Date.now()}`;
+    const firstReq = await request('/api/orders/create', {
+      method: 'POST',
+      body: {
+        freshcart_order_id: rapidOrderId,
+        amount: 350,
+        currency: 'INR',
+        customer: { name: 'Rapid Clicker', email: 'rapid@example.com', phone: '9811223344' },
+      },
+    });
+    assert.strictEqual(firstReq.status, 201, 'First order creation must succeed with 201');
+    const firstRzpId = firstReq.data.data.razorpay_order_id;
+
+    // Simulate immediate second click with same order ID
+    const secondReq = await request('/api/orders/create', {
+      method: 'POST',
+      body: {
+        freshcart_order_id: rapidOrderId,
+        amount: 350,
+        currency: 'INR',
+        customer: { name: 'Rapid Clicker', email: 'rapid@example.com', phone: '9811223344' },
+      },
+    });
+    assert.strictEqual(secondReq.status, 200, 'Repeated click must return 200 OK');
+    assert.strictEqual(
+      secondReq.data.data.razorpay_order_id,
+      firstRzpId,
+      'Must reuse active Razorpay Order ID to prevent duplicate order generation'
+    );
+  });
+
   // 6. Payment Failure / Cancelled Checkout
   await test('Scenario 3 & 4: Failed Transaction & Cancelled Checkout Logging', async () => {
     const cancelOrderId = `FC-CANCEL-${Date.now()}`;
