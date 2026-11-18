@@ -4,69 +4,110 @@ declare global {
   }
 }
 
+const SCRIPT_URL = 'https://checkout.razorpay.com/v1/checkout.js';
 let sdkPromise: Promise<boolean> | null = null;
 
 /**
- * Loads Razorpay Checkout SDK efficiently with deduplication and timeout protection.
- * If already loaded, resolves immediately without re-injecting scripts.
+ * Loads or returns the existing Promise for the Razorpay Checkout SDK.
+ * Handles preloading, existing scripts, polling, deduplication, and safe retry after failure.
  */
 export function loadRazorpaySdk(timeoutMs = 15000): Promise<boolean> {
+  // 1. Instant check: already loaded and initialized on window
   if (typeof window !== 'undefined' && typeof window.Razorpay === 'function') {
     return Promise.resolve(true);
   }
 
+  // 2. Reuse active in-flight loading promise (e.g. preloaded on mount, reused on click)
   if (sdkPromise) {
     return sdkPromise;
   }
 
+  // 3. Create loader promise with fast polling, DOM listener fallback, and clean error handling
   sdkPromise = new Promise<boolean>((resolve, reject) => {
-    const SCRIPT_URL = 'https://checkout.razorpay.com/v1/checkout.js';
-    const existingScript = document.querySelector(`script[src="${SCRIPT_URL}"]`) as HTMLScriptElement | null;
-
-    let timeoutId: any = null;
+    let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
+    let pollTimer: ReturnType<typeof setInterval> | null = null;
 
     const cleanup = () => {
-      if (timeoutId) clearTimeout(timeoutId);
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+      if (pollTimer) clearInterval(pollTimer);
     };
 
-    timeoutId = setTimeout(() => {
+    const handleSuccess = () => {
       cleanup();
-      sdkPromise = null;
-      reject(new Error('Razorpay Checkout SDK failed to load within timeout period. Please check your network connection.'));
+      resolve(true);
+    };
+
+    const handleFailure = (msg: string) => {
+      cleanup();
+      sdkPromise = null; // Reset so subsequent attempt can retry cleanly
+      const deadScript = document.querySelector(`script[src="${SCRIPT_URL}"]`);
+      if (deadScript) {
+        deadScript.remove();
+      }
+      reject(new Error(msg));
+    };
+
+    // Fast-path polling: catches scripts that completed loading before or during event listener registration
+    pollTimer = setInterval(() => {
+      if (typeof window !== 'undefined' && typeof window.Razorpay === 'function') {
+        handleSuccess();
+      }
+    }, 80);
+
+    // Guard timeout
+    timeoutTimer = setTimeout(() => {
+      handleFailure('Razorpay Checkout SDK failed to load within timeout period. Please check your network connection.');
     }, timeoutMs);
 
-    const onScriptLoaded = () => {
-      cleanup();
-      if (typeof window.Razorpay === 'function') {
-        resolve(true);
-      } else {
-        sdkPromise = null;
-        reject(new Error('Razorpay SDK loaded, but window.Razorpay was not found.'));
-      }
-    };
+    // Check if script tag is already in DOM
+    let script = document.querySelector(`script[src="${SCRIPT_URL}"]`) as HTMLScriptElement | null;
 
-    const onScriptError = () => {
-      cleanup();
-      sdkPromise = null;
-      reject(new Error('Failed to load Razorpay Checkout SDK. Please check your internet connection.'));
-    };
-
-    if (existingScript) {
-      if (typeof window.Razorpay === 'function') {
-        cleanup();
-        return resolve(true);
-      }
-      existingScript.addEventListener('load', onScriptLoaded, { once: true });
-      existingScript.addEventListener('error', onScriptError, { once: true });
-    } else {
-      const script = document.createElement('script');
+    if (!script) {
+      script = document.createElement('script');
       script.src = SCRIPT_URL;
       script.async = true;
-      script.onload = onScriptLoaded;
-      script.onerror = onScriptError;
+      script.crossOrigin = 'anonymous';
       document.head.appendChild(script);
     }
+
+    script.addEventListener(
+      'load',
+      () => {
+        if (typeof window.Razorpay === 'function') {
+          handleSuccess();
+        } else {
+          setTimeout(() => {
+            if (typeof window.Razorpay === 'function') {
+              handleSuccess();
+            } else {
+              handleFailure('Razorpay SDK loaded, but window.Razorpay was not found.');
+            }
+          }, 50);
+        }
+      },
+      { once: true }
+    );
+
+    script.addEventListener(
+      'error',
+      () => {
+        handleFailure('Failed to load Razorpay Checkout SDK from CDN. Please check your internet connection.');
+      },
+      { once: true }
+    );
   });
 
   return sdkPromise;
 }
+
+/**
+ * Resets the SDK loader state to allow forced retries if an error occurred.
+ */
+export function resetRazorpaySdk(): void {
+  sdkPromise = null;
+  const script = document.querySelector(`script[src="${SCRIPT_URL}"]`);
+  if (script) {
+    script.remove();
+  }
+}
+

@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams, useLocation } from 'react-router-dom';
 import {
   Lock,
   Loader2,
@@ -26,13 +26,16 @@ import { loadRazorpaySdk } from '../utils/razorpayLoader.ts';
 
 export const CheckoutLaunchPage: React.FC = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const [searchParams] = useSearchParams();
   const { order } = useOrderState();
 
-  const [isLoading, setIsLoading] = useState(true);
+  const passedOrderResponse = (location.state as any)?.orderResponse as RazorpayOrderResponse | undefined;
+
+  const [isLoading, setIsLoading] = useState(!passedOrderResponse);
   const [error, setError] = useState<string | null>(null);
-  const [rzpOrder, setRzpOrder] = useState<RazorpayOrderResponse | null>(null);
-  const [showSimulatedModal, setShowSimulatedModal] = useState(false);
+  const [rzpOrder, setRzpOrder] = useState<RazorpayOrderResponse | null>(passedOrderResponse || null);
+  const [showSimulatedModal, setShowSimulatedModal] = useState(passedOrderResponse?.is_simulated || false);
   const [activeSimMethod, setActiveSimMethod] = useState<'upi' | 'card' | 'netbanking'>('upi');
   const [wasDismissed, setWasDismissed] = useState(false);
   const [isLaunching, setIsLaunching] = useState(false);
@@ -40,11 +43,23 @@ export const CheckoutLaunchPage: React.FC = () => {
 
   const selectedCategory = searchParams.get('method') || 'upi';
 
-  // Step 1: Initialize Order with Backend & Preload SDK
+  // Step 1: Initialize Order with Backend & Preload SDK (only if not already passed)
   useEffect(() => {
     let isMounted = true;
 
     async function initOrder() {
+      // If orderResponse was already created on selection page, reuse it completely without calling API
+      if (passedOrderResponse) {
+        if (isMounted) {
+          setRzpOrder(passedOrderResponse);
+          setIsLoading(false);
+          if (passedOrderResponse.is_simulated) {
+            setShowSimulatedModal(true);
+          }
+        }
+        return;
+      }
+
       try {
         setIsLoading(true);
         setError(null);
@@ -74,7 +89,7 @@ export const CheckoutLaunchPage: React.FC = () => {
     return () => {
       isMounted = false;
     };
-  }, [order]);
+  }, [order, passedOrderResponse]);
 
   const isTestMode = rzpOrder
     ? rzpOrder.payment_mode === 'test' || rzpOrder.key_id?.startsWith('rzp_test_')

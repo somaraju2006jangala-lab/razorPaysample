@@ -20,9 +20,10 @@ import {
 } from 'lucide-react';
 import { useOrderState } from '../hooks/useOrderState.ts';
 import { PaymentApiService } from '../services/api.ts';
-import { loadRazorpaySdk } from '../utils/razorpayLoader.ts';
+import { loadRazorpaySdk, resetRazorpaySdk } from '../utils/razorpayLoader.ts';
 
 type PaymentCategory = 'upi' | 'card' | 'netbanking' | 'wallet';
+type LoadingStage = 'idle' | 'preparing' | 'creating_order' | 'opening_razorpay';
 
 export const PaymentSelectionPage: React.FC = () => {
   const navigate = useNavigate();
@@ -32,22 +33,40 @@ export const PaymentSelectionPage: React.FC = () => {
   const [selectedCategory, setSelectedCategory] = useState<PaymentCategory>('upi');
   const [selectedSubMethod, setSelectedSubMethod] = useState<string>('upi_intent');
   const [isProcessing, setIsProcessing] = useState(false);
+  const [loadingStage, setLoadingStage] = useState<LoadingStage>('idle');
   const [error, setError] = useState<string | null>(null);
   const [dismissedNotice, setDismissedNotice] = useState(false);
   const isSubmittingRef = useRef(false);
+  const isMountedRef = useRef(true);
 
   useEffect(() => {
+    isMountedRef.current = true;
+
+    // 1. Preload Razorpay Checkout SDK in background on mount
+    loadRazorpaySdk().catch((err) => {
+      console.warn('Preload Razorpay SDK note:', err.message);
+    });
+
+    // 2. Query gateway health
     PaymentApiService.checkHealth()
       .then((health) => {
-        if (health?.payment_mode === 'test') {
-          setPaymentMode('test');
-        } else {
-          setPaymentMode('live');
+        if (isMountedRef.current) {
+          if (health?.payment_mode === 'test') {
+            setPaymentMode('test');
+          } else {
+            setPaymentMode('live');
+          }
         }
       })
       .catch(() => {
-        setPaymentMode('live');
+        if (isMountedRef.current) {
+          setPaymentMode('live');
+        }
       });
+
+    return () => {
+      isMountedRef.current = false;
+    };
   }, []);
 
   const handleContinueToPay = async () => {
@@ -60,23 +79,35 @@ export const PaymentSelectionPage: React.FC = () => {
       setError(null);
       setDismissedNotice(false);
 
-      // In parallel: ensure Razorpay SDK is loaded & request official order from backend
-      const [_, orderResponse] = await Promise.all([
-        loadRazorpaySdk().catch((err) => {
-          console.warn('Razorpay SDK loader note:', err);
-          return false;
-        }),
-        PaymentApiService.createOrder(order),
-      ]);
+      // Stage 1: Preparing secure checkout (reuses preloaded SDK promise)
+      setLoadingStage('preparing');
+      await loadRazorpaySdk().catch((err) => {
+        console.warn('Razorpay SDK loader note:', err);
+        return false;
+      });
+
+      if (!isMountedRef.current) return;
+
+      // Stage 2: Creating payment order on server
+      setLoadingStage('creating_order');
+      const orderResponse = await PaymentApiService.createOrder(order);
+
+      if (!isMountedRef.current) return;
 
       // If backend is in offline dummy mode, route to simulated checkout launcher
       if (orderResponse.is_simulated) {
-        navigate(`/checkout/launch?method=${selectedCategory}&sub=${selectedSubMethod}`);
+        navigate(`/checkout/launch?method=${selectedCategory}&sub=${selectedSubMethod}`, {
+          state: { orderResponse },
+        });
         return;
       }
 
+      // Stage 3: Opening Razorpay Standard Checkout
+      setLoadingStage('opening_razorpay');
+
       // Verify Razorpay constructor is present
       if (typeof window.Razorpay === 'undefined') {
+        resetRazorpaySdk();
         throw new Error('Razorpay Checkout SDK failed to load. Please check your internet connection and try again.');
       }
 
@@ -106,9 +137,12 @@ export const PaymentSelectionPage: React.FC = () => {
           handleback: true,
           confirm_close: true,
           ondismiss: function () {
-            setIsProcessing(false);
+            if (isMountedRef.current) {
+              setIsProcessing(false);
+              setLoadingStage('idle');
+              setDismissedNotice(true);
+            }
             isSubmittingRef.current = false;
-            setDismissedNotice(true);
             PaymentApiService.reportFailure({
               freshcart_order_id: order.freshcart_order_id,
               razorpay_order_id: orderResponse.razorpay_order_id,
@@ -132,7 +166,10 @@ export const PaymentSelectionPage: React.FC = () => {
       const rzp = new window.Razorpay(options);
 
       rzp.on('payment.failed', function (resp: any) {
-        setIsProcessing(false);
+        if (isMountedRef.current) {
+          setIsProcessing(false);
+          setLoadingStage('idle');
+        }
         isSubmittingRef.current = false;
         PaymentApiService.reportFailure({
           freshcart_order_id: order.freshcart_order_id,
@@ -153,8 +190,11 @@ export const PaymentSelectionPage: React.FC = () => {
       rzp.open();
     } catch (err: any) {
       console.error('Payment initiation error:', err);
-      setError(err.message || 'Failed to initiate payment. Please try again.');
-      setIsProcessing(false);
+      if (isMountedRef.current) {
+        setError(err.message || 'Failed to initiate payment. Please try again.');
+        setIsProcessing(false);
+        setLoadingStage('idle');
+      }
       isSubmittingRef.current = false;
     }
   };
@@ -519,7 +559,12 @@ export const PaymentSelectionPage: React.FC = () => {
               {isProcessing ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin text-slate-950" />
-                  <span>Connecting to Razorpay...</span>
+                  <span>
+                    {loadingStage === 'preparing' && 'Preparing secure checkout...'}
+                    {loadingStage === 'creating_order' && 'Creating payment order...'}
+                    {loadingStage === 'opening_razorpay' && 'Opening Razorpay...'}
+                    {loadingStage === 'idle' && 'Connecting to Razorpay...'}
+                  </span>
                 </>
               ) : (
                 <>
