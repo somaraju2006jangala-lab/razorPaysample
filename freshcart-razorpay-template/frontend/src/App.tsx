@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { MainLayout } from './layouts/MainLayout.tsx';
+import { PaymentApiService } from './services/api.ts';
 import { LandingPage } from './pages/LandingPage.tsx';
 import { PaymentSelectionPage } from './pages/PaymentSelectionPage.tsx';
 import { CheckoutLaunchPage } from './pages/CheckoutLaunchPage.tsx';
@@ -14,6 +15,18 @@ import { HistoryPage } from './pages/HistoryPage.tsx';
 import { AdminDashboardPage } from './pages/AdminDashboardPage.tsx';
 
 export function App() {
+  useEffect(() => {
+    // Proactively pre-warm backend container as soon as visitor arrives on the site
+    PaymentApiService.checkHealth().catch(() => {});
+
+    // Periodic lightweight background keep-alive ping (every 8 min) while tab is open
+    const keepAliveTimer = setInterval(() => {
+      PaymentApiService.checkHealth().catch(() => {});
+    }, 8 * 60 * 1000);
+
+    return () => clearInterval(keepAliveTimer);
+  }, []);
+
   return (
     <BrowserRouter>
       <MainLayout>

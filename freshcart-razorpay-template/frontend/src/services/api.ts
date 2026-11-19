@@ -42,9 +42,9 @@ export class PaymentApiService {
   private static async fetchWithTimeout(
     url: string,
     options: RequestInit = {},
-    timeoutMs = 30000,
-    retries = 0,
-    retryDelayMs = 2000
+    timeoutMs = 120000,
+    retries = 1,
+    retryDelayMs = 2500
   ): Promise<Response> {
     let lastError: any = null;
 
@@ -95,11 +95,11 @@ export class PaymentApiService {
 
         if (isAbort) {
           throw new Error(
-            'Request timed out. The backend server might be spinning up (Render cold start) or your connection is slow. Please retry.'
+            'Request timed out. The backend server took longer than expected to start up. Please tap Pay Securely to try again.'
           );
         }
         if (isNetworkError) {
-          throw new Error('Unable to connect to the backend server. Please verify network connectivity.');
+          throw new Error('Unable to connect to the backend server. Please verify your network connectivity.');
         }
         throw err;
       } finally {
@@ -127,15 +127,15 @@ export class PaymentApiService {
     this.healthInFlight = (async () => {
       try {
         console.log('[PaymentGateway] Checking backend health / pre-warming container...');
-        // 45s timeout and 1 retry to accommodate Render cold start on initial visit
-        const res = await this.fetchWithTimeout(`${API_BASE}/health`, {}, 45000, 1, 2000);
+        // 120s timeout and 1 retry to accommodate Render cold start
+        const res = await this.fetchWithTimeout(`${API_BASE}/health`, {}, 120000, 1, 2000);
         const data = await res.json();
         console.log(`[PaymentGateway] Backend healthy (Mode: ${data.payment_mode || 'unknown'}, Env: ${data.environment || 'unknown'})`);
         this.cachedHealth = { data, timestamp: Date.now() };
         return data;
       } catch (err: any) {
         console.warn('[PaymentGateway] Gateway health probe notice:', err.message);
-        const fallback: HealthResponse = { status: 'offline', payment_mode: 'test', environment: 'development' };
+        const fallback: HealthResponse = { status: 'offline', payment_mode: 'live', environment: 'production' };
         return fallback;
       } finally {
         this.healthInFlight = null;
@@ -147,7 +147,7 @@ export class PaymentApiService {
 
   /**
    * Creates or retrieves a Razorpay order with cold-start tolerance and idempotency protection.
-   * Does NOT silently retry multiple times to prevent duplicate transactions.
+   * Tolerates Render cold-start duration with 120s window without premature aborts.
    */
   static async createOrder(order: OrderDetails): Promise<RazorpayOrderResponse> {
     const orderKey = `${order.freshcart_order_id}_${order.total_payable}`;
@@ -160,7 +160,7 @@ export class PaymentApiService {
     const orderPromise = (async () => {
       try {
         console.log(`[PaymentGateway] Initiating payment order for ${order.freshcart_order_id} (Amount: ₹${order.total_payable})...`);
-        // 45s single timeout, zero silent retries to prevent duplicate transactions
+        // 120s timeout accommodates Render cold start without premature aborts, 1 retry on 502/503 cold-start proxy errors
         const res = await this.fetchWithTimeout(
           `${API_BASE}/orders/create`,
           {
@@ -181,9 +181,9 @@ export class PaymentApiService {
               },
             }),
           },
-          45000,
-          0,
-          0
+          120000,
+          1,
+          2500
         );
 
         let data: any = null;

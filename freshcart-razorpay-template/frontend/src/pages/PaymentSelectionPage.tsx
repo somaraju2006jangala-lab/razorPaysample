@@ -34,10 +34,28 @@ export const PaymentSelectionPage: React.FC = () => {
   const [selectedSubMethod, setSelectedSubMethod] = useState<string>('upi_intent');
   const [isProcessing, setIsProcessing] = useState(false);
   const [loadingStage, setLoadingStage] = useState<LoadingStage>('idle');
+  const [waitingElapsed, setWaitingElapsed] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [dismissedNotice, setDismissedNotice] = useState(false);
   const isSubmittingRef = useRef(false);
   const isMountedRef = useRef(true);
+
+  // Track elapsed waiting time for dynamic cold-start progress feedback
+  useEffect(() => {
+    let timer: any = null;
+    if (isProcessing) {
+      setWaitingElapsed(0);
+      const start = Date.now();
+      timer = setInterval(() => {
+        setWaitingElapsed(Math.floor((Date.now() - start) / 1000));
+      }, 1000);
+    } else {
+      setWaitingElapsed(0);
+    }
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [isProcessing]);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -573,13 +591,37 @@ export const PaymentSelectionPage: React.FC = () => {
               <span className="text-2xl text-slate-900">₹{order.total_payable.toFixed(2)}</span>
             </div>
 
-            {/* Error Message Notice */}
+            {/* Live Progress Notice during Cold Starts */}
+            {isProcessing && waitingElapsed > 6 && (
+              <div className="p-3.5 rounded-2xl bg-emerald-50 border border-emerald-200 text-left text-xs text-emerald-900 flex items-start gap-2.5 animate-in fade-in">
+                <Loader2 className="w-4 h-4 text-emerald-600 animate-spin shrink-0 mt-0.5" />
+                <div>
+                  <span className="font-bold text-emerald-950 block">Connecting to Payment Gateway</span>
+                  <span className="text-[11px] text-emerald-800 leading-relaxed">
+                    Cloud server is initializing from sleep ({waitingElapsed}s). Your order is preserved and Razorpay will open automatically in a moment...
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {/* Error Message Notice with Instant Retry */}
             {error && (
               <div className="p-3.5 rounded-2xl bg-red-50 border border-red-200 text-left text-xs text-red-900 flex items-start gap-2.5 animate-in fade-in">
                 <AlertTriangle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
-                <div className="space-y-1">
-                  <span className="font-bold text-red-950 block">Unable to Connect to Gateway</span>
-                  <p className="text-[11px] text-red-800 leading-relaxed">{error}</p>
+                <div className="space-y-2 flex-1">
+                  <div>
+                    <span className="font-bold text-red-950 block">Unable to Connect to Gateway</span>
+                    <p className="text-[11px] text-red-800 leading-relaxed">{error}</p>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setError(null);
+                      handleContinueToPay();
+                    }}
+                    className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-[11px] transition-colors cursor-pointer"
+                  >
+                    <span>Retry Now</span>
+                  </button>
                 </div>
               </div>
             )}
@@ -597,7 +639,7 @@ export const PaymentSelectionPage: React.FC = () => {
               </div>
             )}
 
-            {/* Pay Securely Button with Instant Loading & Disabled State */}
+            {/* Pay Securely Button with Dynamic Cold-Start Loading & Disabled State */}
             <button
               onClick={handleContinueToPay}
               disabled={isProcessing}
@@ -611,10 +653,13 @@ export const PaymentSelectionPage: React.FC = () => {
                 <>
                   <Loader2 className="w-4 h-4 animate-spin text-slate-950" />
                   <span>
-                    {loadingStage === 'preparing' && 'Preparing secure checkout...'}
-                    {loadingStage === 'creating_order' && 'Creating payment order...'}
-                    {loadingStage === 'opening_razorpay' && 'Opening Razorpay...'}
-                    {loadingStage === 'idle' && 'Connecting to Razorpay...'}
+                    {loadingStage === 'opening_razorpay'
+                      ? 'Opening Razorpay Checkout...'
+                      : waitingElapsed > 12
+                      ? `Waking secure server (${waitingElapsed}s)...`
+                      : waitingElapsed > 4
+                      ? 'Connecting to payment gateway...'
+                      : 'Creating payment order...'}
                   </span>
                 </>
               ) : (
