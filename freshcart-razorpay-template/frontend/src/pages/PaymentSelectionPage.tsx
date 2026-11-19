@@ -167,35 +167,18 @@ export const PaymentSelectionPage: React.FC = () => {
         orderResponse.payment_mode === 'test' ||
         orderResponse.key_id?.startsWith('rzp_test_');
 
-      // LIVE MODE: Configure actual Razorpay-supported UPI Intent and Dynamic QR payments.
-      // On Android mobile browsers, this triggers seamless intent handoff to native apps (GPay, PhonePe, Paytm).
-      // On desktop browsers, it displays dynamic QR code.
-      if (!isTestOrder && selectedCategory === 'upi') {
-        const upiFlows: string[] = selectedSubMethod === 'qr' ? ['qr'] : ['intent', 'qr'];
-        const upiApps: string[] =
-          selectedSubMethod === 'gpay'
-            ? ['google_pay']
-            : selectedSubMethod === 'phonepe'
-            ? ['phonepe']
-            : selectedSubMethod === 'paytm'
-            ? ['paytm']
-            : ['google_pay', 'phonepe', 'paytm', 'bhim'];
-
+      // LIVE MODE: Explicitly hide the deprecated UPI Collect flow using Razorpay's supported configuration.
+      // This preserves supported UPI Intent and Dynamic QR payment options, without forcing rigid app-specific configurations.
+      // Razorpay Standard Checkout will display supported UPI apps according to device and merchant account eligibility.
+      if (!isTestOrder) {
         options.config = {
           display: {
-            blocks: {
-              upi: {
-                name: 'Pay using UPI (Intent / QR)',
-                instruments: [
-                  {
-                    method: 'upi',
-                    flows: upiFlows,
-                    apps: upiApps,
-                  },
-                ],
+            hide: [
+              {
+                method: 'upi',
+                flows: ['collect'],
               },
-            },
-            sequence: ['block.upi'],
+            ],
             preferences: {
               show_default_blocks: true,
             },
@@ -203,7 +186,7 @@ export const PaymentSelectionPage: React.FC = () => {
         };
       }
       // TEST MODE: Rely on Razorpay's supported simulated UPI testing flow (success@razorpay).
-      // Do not force Android intent handoff to external physical banking apps because sandbox mock VPAs do not exist on the live NPCI switch.
+      // Sandbox mock VPAs do not exist on the live NPCI switch.
 
       const rzp = new window.Razorpay(options);
 
