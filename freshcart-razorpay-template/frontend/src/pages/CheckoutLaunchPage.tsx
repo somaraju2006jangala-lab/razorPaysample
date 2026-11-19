@@ -165,8 +165,14 @@ export const CheckoutLaunchPage: React.FC = () => {
         },
       };
 
-      // Configure modern Razorpay UPI Intent & Dynamic QR flows (NPCI Compliant)
-      if (selectedCategory === 'upi') {
+      const isTestOrder =
+        rzpOrder.payment_mode === 'test' ||
+        rzpOrder.key_id?.startsWith('rzp_test_');
+
+      // LIVE MODE: Configure actual Razorpay-supported UPI Intent and Dynamic QR payments.
+      // On Android mobile browsers, this triggers seamless intent handoff to native apps (GPay, PhonePe, Paytm).
+      // On desktop browsers, it displays dynamic QR code.
+      if (!isTestOrder && selectedCategory === 'upi') {
         const upiFlows: string[] = selectedSubMethod === 'qr' ? ['qr'] : ['intent', 'qr'];
         const upiApps: string[] =
           selectedSubMethod === 'gpay'
@@ -198,6 +204,8 @@ export const CheckoutLaunchPage: React.FC = () => {
           },
         };
       }
+      // TEST MODE: Rely on Razorpay's supported simulated UPI testing flow (success@razorpay).
+      // Do not force Android intent handoff to external physical banking apps because sandbox mock VPAs do not exist on the live NPCI switch.
 
       const rzp = new window.Razorpay(options);
 
