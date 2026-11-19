@@ -163,6 +163,40 @@ export const PaymentSelectionPage: React.FC = () => {
         },
       };
 
+      // Configure modern Razorpay UPI Intent & Dynamic QR flows (NPCI Compliant)
+      if (selectedCategory === 'upi') {
+        const upiFlows: string[] = selectedSubMethod === 'qr' ? ['qr'] : ['intent', 'qr'];
+        const upiApps: string[] =
+          selectedSubMethod === 'gpay'
+            ? ['google_pay']
+            : selectedSubMethod === 'phonepe'
+            ? ['phonepe']
+            : selectedSubMethod === 'paytm'
+            ? ['paytm']
+            : ['google_pay', 'phonepe', 'paytm', 'bhim'];
+
+        options.config = {
+          display: {
+            blocks: {
+              upi: {
+                name: 'Pay using UPI (Intent / QR)',
+                instruments: [
+                  {
+                    method: 'upi',
+                    flows: upiFlows,
+                    apps: upiApps,
+                  },
+                ],
+              },
+            },
+            sequence: ['block.upi'],
+            preferences: {
+              show_default_blocks: true,
+            },
+          },
+        };
+      }
+
       const rzp = new window.Razorpay(options);
 
       rzp.on('payment.failed', function (resp: any) {
@@ -283,27 +317,55 @@ export const PaymentSelectionPage: React.FC = () => {
                   </div>
                 </div>
 
-                {/* UPI Supported Apps Preview */}
+                {/* UPI Supported Apps Preview & Selection */}
                 {selectedCategory === 'upi' && (
-                  <div className="mt-4 pt-4 border-t border-emerald-100">
+                  <div className="mt-4 pt-4 border-t border-emerald-100 space-y-3">
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                       {[
-                        { id: 'gpay', name: 'Google Pay', badge: 'UPI Intent' },
-                        { id: 'phonepe', name: 'PhonePe', badge: 'UPI Intent' },
-                        { id: 'paytm', name: 'Paytm UPI', badge: 'UPI Intent' },
+                        { id: 'upi_intent', name: 'All UPI Apps', badge: 'Auto Intent' },
+                        { id: 'gpay', name: 'Google Pay', badge: 'GPay Intent' },
+                        { id: 'phonepe', name: 'PhonePe', badge: 'PhonePe Intent' },
+                        { id: 'paytm', name: 'Paytm UPI', badge: 'Paytm Intent' },
                         { id: 'qr', name: 'Dynamic QR', badge: 'Scan & Pay' },
                       ].map((app) => (
-                        <div
+                        <button
                           key={app.id}
-                          className="p-2.5 rounded-xl text-left border border-emerald-200/60 bg-white shadow-xs"
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedSubMethod(app.id);
+                          }}
+                          className={`p-2.5 rounded-xl text-left border transition-all cursor-pointer ${
+                            selectedSubMethod === app.id
+                              ? 'border-emerald-500 bg-emerald-50/50 shadow-sm ring-1 ring-emerald-500'
+                              : 'border-emerald-200/60 bg-white hover:border-emerald-400'
+                          }`}
                         >
-                          <span className="block text-xs font-bold text-slate-900">{app.name}</span>
+                          <div className="flex items-center justify-between">
+                            <span className="block text-xs font-bold text-slate-900">{app.name}</span>
+                            {selectedSubMethod === app.id && (
+                              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                            )}
+                          </div>
                           <span className="text-[10px] text-emerald-700 font-medium">{app.badge}</span>
-                        </div>
+                        </button>
                       ))}
                     </div>
-                    <p className="text-[11px] text-slate-500 mt-2.5">
-                      ✓ Instant app-switch on Android/iOS. No manual UPI ID typing required.
+
+                    {paymentMode === 'test' && (
+                      <div className="p-3 rounded-xl bg-amber-50/90 border border-amber-200 text-xs text-amber-900 flex items-start gap-2.5">
+                        <Info className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                        <div className="space-y-1">
+                          <span className="font-bold block text-amber-950">Test Mode Simulation Notice</span>
+                          <p className="text-[11px] leading-relaxed text-amber-800">
+                            Real mobile UPI apps will reject test QR codes with <span className="font-semibold text-amber-950">"invalid UPI ID"</span> because test merchant IDs do not exist on the live NPCI switch. In Test Mode, enter <code className="bg-amber-100 font-bold px-1.5 py-0.5 rounded text-amber-950">success@razorpay</code> inside the Razorpay checkout popup.
+                          </p>
+                        </div>
+                      </div>
+                    )}
+
+                    <p className="text-[11px] text-slate-500">
+                      ✓ Instant app-switch on Android/iOS. Dynamic QR on desktop. No manual UPI ID typing required.
                     </p>
                   </div>
                 )}

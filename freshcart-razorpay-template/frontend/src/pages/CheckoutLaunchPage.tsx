@@ -42,6 +42,7 @@ export const CheckoutLaunchPage: React.FC = () => {
   const autoLaunchRef = useRef(false);
 
   const selectedCategory = searchParams.get('method') || 'upi';
+  const selectedSubMethod = searchParams.get('sub') || 'upi_intent';
 
   // Step 1: Initialize Order with Backend & Preload SDK (only if not already passed)
   useEffect(() => {
@@ -163,6 +164,40 @@ export const CheckoutLaunchPage: React.FC = () => {
           },
         },
       };
+
+      // Configure modern Razorpay UPI Intent & Dynamic QR flows (NPCI Compliant)
+      if (selectedCategory === 'upi') {
+        const upiFlows: string[] = selectedSubMethod === 'qr' ? ['qr'] : ['intent', 'qr'];
+        const upiApps: string[] =
+          selectedSubMethod === 'gpay'
+            ? ['google_pay']
+            : selectedSubMethod === 'phonepe'
+            ? ['phonepe']
+            : selectedSubMethod === 'paytm'
+            ? ['paytm']
+            : ['google_pay', 'phonepe', 'paytm', 'bhim'];
+
+        options.config = {
+          display: {
+            blocks: {
+              upi: {
+                name: 'Pay using UPI (Intent / QR)',
+                instruments: [
+                  {
+                    method: 'upi',
+                    flows: upiFlows,
+                    apps: upiApps,
+                  },
+                ],
+              },
+            },
+            sequence: ['block.upi'],
+            preferences: {
+              show_default_blocks: true,
+            },
+          },
+        };
+      }
 
       const rzp = new window.Razorpay(options);
 

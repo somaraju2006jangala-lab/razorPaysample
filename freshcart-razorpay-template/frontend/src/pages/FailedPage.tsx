@@ -22,11 +22,12 @@ export const FailedPage: React.FC = () => {
     errorCode?: string;
   } | null;
 
-  const orderId = state?.orderId || order.freshcart_order_id;
-  const errorCode = state?.errorCode || 'PAYMENT_FAILED';
+  const queryParams = new URLSearchParams(location.search);
+  const orderId = state?.orderId || queryParams.get('orderId') || order.freshcart_order_id;
+  const errorCode = state?.errorCode || queryParams.get('errorCode') || queryParams.get('reason') || 'PAYMENT_FAILED';
   const isDismissed = errorCode === 'MODAL_DISMISSED';
   const reason = state?.reason || (isDismissed 
-    ? 'The payment window was closed before completion. No funds were debited.' 
+    ? 'Payment modal was dismissed before completion.' 
     : 'Transaction could not be authorized by your bank.');
 
   return (
@@ -68,6 +69,22 @@ export const FailedPage: React.FC = () => {
             </span>
           </div>
           <p className="text-red-800 leading-relaxed">{reason}</p>
+        </div>
+
+        {/* UPI & Test Mode Troubleshooting Guidance */}
+        <div className="p-4 rounded-2xl bg-amber-50/80 border border-amber-200 text-left space-y-2 text-xs text-amber-950">
+          <div className="flex items-center gap-2 font-bold text-amber-900">
+            <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+            <span>Did your UPI App report "Invalid UPI ID"?</span>
+          </div>
+          <div className="text-[11px] text-amber-800 space-y-1.5 leading-relaxed">
+            <p>
+              • <strong>Test / Demo Mode:</strong> Real banking apps (Google Pay, PhonePe, Paytm) reject test QR codes and Intents because sandbox mock VPAs do not exist on the live NPCI switch. In Test Mode, enter <code className="bg-amber-100 font-bold px-1.5 py-0.5 rounded text-amber-950">success@razorpay</code> inside the Razorpay popup to simulate payment success.
+            </p>
+            <p>
+              • <strong>Live Production Mode:</strong> If using Live credentials, verify on your Razorpay Dashboard (<code className="bg-amber-100 font-bold px-1.5 py-0.5 rounded text-amber-950">dashboard.razorpay.com</code>) under <em>Account & Settings → Payment Methods → UPI</em> that UPI is marked <strong>Active</strong> and merchant KYC is approved.
+            </p>
+          </div>
         </div>
 
         {/* Reassurance Banner */}
