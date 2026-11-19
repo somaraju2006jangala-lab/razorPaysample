@@ -20,10 +20,52 @@ import {
 } from 'lucide-react';
 import { useOrderState } from '../hooks/useOrderState.ts';
 import { PaymentApiService } from '../services/api.ts';
+import { RazorpayOrderResponse } from '../types/payment.ts';
 import { loadRazorpaySdk, resetRazorpaySdk } from '../utils/razorpayLoader.ts';
 
 type PaymentCategory = 'upi' | 'card' | 'netbanking' | 'wallet';
 type LoadingStage = 'idle' | 'preparing' | 'creating_order' | 'opening_razorpay';
+
+/**
+ * Safely verifies if a preloaded Razorpay order strictly matches the current order state.
+ * Returns true only when complete payment-relevant details match (Order ID, Amount, Currency, Customer details).
+ */
+function isPreloadedOrderMatching(
+  preloaded: RazorpayOrderResponse | null,
+  current: {
+    freshcart_order_id: string;
+    total_payable: number;
+    currency?: string;
+    customer?: { email?: string; phone?: string };
+  }
+): boolean {
+  if (!preloaded || !preloaded.razorpay_order_id) return false;
+  return (
+    preloaded.freshcart_order_id === current.freshcart_order_id &&
+    preloaded.amount === current.total_payable &&
+    (preloaded.currency || 'INR').toUpperCase() === (current.currency || 'INR').toUpperCase() &&
+    preloaded.customer?.email === current.customer?.email &&
+    preloaded.customer?.phone === current.customer?.phone
+  );
+}
+
+/**
+ * Computes a deterministic identity key for payment order requests.
+ */
+function getOrderRequestKey(order: {
+  freshcart_order_id: string;
+  total_payable: number;
+  currency?: string;
+  customer?: { email?: string; phone?: string };
+}): string {
+  return [
+    order.freshcart_order_id,
+    order.total_payable,
+    (order.currency || 'INR').toUpperCase(),
+    order.customer?.email || '',
+    order.customer?.phone || '',
+  ].join(':');
+}
 
 export const PaymentSelectionPage: React.FC = () => {
   const navigate = useNavigate();
@@ -39,6 +81,13 @@ export const PaymentSelectionPage: React.FC = () => {
   const [dismissedNotice, setDismissedNotice] = useState(false);
   const isSubmittingRef = useRef(false);
   const isMountedRef = useRef(true);
+  const preloadGenerationRef = useRef(0);
+  const preloadedOrderRef = useRef<RazorpayOrderResponse | null>(null);
+  const inFlightPreloadRef = useRef<{
+    generation: number;
+    requestKey: string;
+    promise: Promise<RazorpayOrderResponse>;
+  } | null>(null);
 
   // Track elapsed waiting time for dynamic cold-start progress feedback
   useEffect(() => {
@@ -59,13 +108,59 @@ export const PaymentSelectionPage: React.FC = () => {
 
   useEffect(() => {
     isMountedRef.current = true;
+    const currentKey = getOrderRequestKey(order);
+
+    // Discard stale preloaded order if order details changed while on page
+    if (!isPreloadedOrderMatching(preloadedOrderRef.current, order)) {
+      preloadedOrderRef.current = null;
+    }
 
     // 1. Preload Razorpay Checkout SDK in background on mount
     loadRazorpaySdk().catch((err) => {
       console.warn('Preload Razorpay SDK note:', err.message);
     });
 
-    // 2. Query gateway health
+    // 2. Pre-create payment order token in background if not already matching or currently in flight
+    const hasMatchingReadyOrder = isPreloadedOrderMatching(preloadedOrderRef.current, order);
+    const hasMatchingInFlight = inFlightPreloadRef.current?.requestKey === currentKey;
+
+    if (!hasMatchingReadyOrder && !hasMatchingInFlight) {
+      const generation = ++preloadGenerationRef.current;
+      const currentOrderSnapshot = { ...order };
+
+      const preloadPromise = PaymentApiService.createOrder(currentOrderSnapshot)
+        .then((res) => {
+          if (
+            isMountedRef.current &&
+            preloadGenerationRef.current === generation &&
+            isPreloadedOrderMatching(res, currentOrderSnapshot)
+          ) {
+            preloadedOrderRef.current = res;
+            console.log('[PaymentSelection] Background order preparation completed for:', res.freshcart_order_id);
+          }
+          return res;
+        })
+        .catch((err) => {
+          console.warn('[PaymentSelection] Background order preload notice (will fallback on click):', err.message);
+          if (isMountedRef.current && preloadGenerationRef.current === generation) {
+            preloadedOrderRef.current = null;
+          }
+          throw err;
+        })
+        .finally(() => {
+          if (inFlightPreloadRef.current?.generation === generation) {
+            inFlightPreloadRef.current = null;
+          }
+        });
+
+      inFlightPreloadRef.current = {
+        generation,
+        requestKey: currentKey,
+        promise: preloadPromise,
+      };
+    }
+
+    // 3. Query gateway health
     PaymentApiService.checkHealth()
       .then((health) => {
         if (isMountedRef.current) {
@@ -85,7 +180,7 @@ export const PaymentSelectionPage: React.FC = () => {
     return () => {
       isMountedRef.current = false;
     };
-  }, []);
+  }, [order.freshcart_order_id, order.total_payable, order.currency, order.customer?.email, order.customer?.phone]);
 
   const handleContinueToPay = async () => {
     // Prevent duplicate payment requests from repeated clicks
@@ -97,16 +192,55 @@ export const PaymentSelectionPage: React.FC = () => {
       setError(null);
       setDismissedNotice(false);
 
-      // Stage 1: Creating payment order on server while ensuring Razorpay SDK is ready in parallel
-      setLoadingStage('creating_order');
+      const currentKey = getOrderRequestKey(order);
+      let orderResponse: RazorpayOrderResponse | null = null;
 
-      const [orderResponse] = await Promise.all([
-        PaymentApiService.createOrder(order),
-        loadRazorpaySdk().catch((err) => {
-          console.warn('Razorpay SDK loader note:', err);
-          return false;
-        }),
-      ]);
+      // Step 1: Reuse preloaded order only if it strictly matches current order details
+      if (isPreloadedOrderMatching(preloadedOrderRef.current, order)) {
+        orderResponse = preloadedOrderRef.current;
+      } else {
+        // Discard any stale preloaded order
+        preloadedOrderRef.current = null;
+      }
+
+      // Step 2: If a background order request matching current request identity is in-flight, await it to prevent duplicate network calls
+      const activeInFlight = inFlightPreloadRef.current;
+      if (!orderResponse && activeInFlight && activeInFlight.requestKey === currentKey) {
+        setLoadingStage('creating_order');
+        try {
+          const inFlightRes = await activeInFlight.promise;
+          if (isPreloadedOrderMatching(inFlightRes, order)) {
+            orderResponse = inFlightRes;
+            preloadedOrderRef.current = inFlightRes;
+          }
+        } catch (preloadErr) {
+          console.warn('[PaymentSelection] Background preload attempt failed, falling back to fresh creation:', preloadErr);
+          // Safely fall through to normal order creation below
+          if (preloadGenerationRef.current === activeInFlight.generation) {
+            preloadedOrderRef.current = null;
+          }
+        }
+      }
+
+      // Step 3: If no valid matching order exists (or background preload failed/was stale), execute normal order creation
+      if (!orderResponse) {
+        setLoadingStage('creating_order');
+        preloadGenerationRef.current++;
+        inFlightPreloadRef.current = null;
+
+        const [res] = await Promise.all([
+          PaymentApiService.createOrder(order),
+          loadRazorpaySdk().catch((err) => {
+            console.warn('Razorpay SDK loader note:', err);
+            return false;
+          }),
+        ]);
+        orderResponse = res;
+        preloadedOrderRef.current = res;
+      } else {
+        // Preloaded order matches: ensure Razorpay SDK script is ready concurrently
+        await loadRazorpaySdk().catch(() => false);
+      }
 
       if (!isMountedRef.current) return;
 
@@ -168,6 +302,11 @@ export const PaymentSelectionPage: React.FC = () => {
           },
         },
         handler: function (response: any) {
+          // Consume and invalidate preloaded order to prevent resubmission
+          preloadGenerationRef.current++;
+          preloadedOrderRef.current = null;
+          inFlightPreloadRef.current = null;
+
           navigate('/processing', {
             state: {
               freshcart_order_id: order.freshcart_order_id,

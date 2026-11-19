@@ -38,6 +38,41 @@ export class PaymentPersistenceService {
     `);
         stmt.run(status, freshcartOrderId);
     }
+    static updateOrderAmount(freshcartOrderId, amount, amountInPaise) {
+        const stmt = db.prepare(`
+      UPDATE orders
+      SET amount = ?, amount_in_paise = ?, updated_at = datetime('now')
+      WHERE freshcart_order_id = ?
+    `);
+        stmt.run(amount, amountInPaise, freshcartOrderId);
+    }
+    /**
+     * Atomically updates an unpaid order with a new Razorpay order ID and matching amount.
+     * Uses WHERE status NOT IN ('CAPTURED', 'AUTHORIZED') to ensure paid orders can never be overwritten.
+     * Guarantees that the DB amount, amount_in_paise, and Razorpay order ID always match atomically.
+     */
+    static updateOrderWithNewRazorpayOrder(data) {
+        const currency = data.currency || 'INR';
+        const itemsJson = data.items ? JSON.stringify(data.items) : null;
+        const notesJson = data.notes ? JSON.stringify(data.notes) : null;
+        const stmt = db.prepare(`
+      UPDATE orders
+      SET razorpay_order_id = ?,
+          amount = ?,
+          amount_in_paise = ?,
+          currency = ?,
+          status = 'CREATED',
+          customer_name = COALESCE(?, customer_name),
+          customer_email = COALESCE(?, customer_email),
+          customer_phone = COALESCE(?, customer_phone),
+          items_json = COALESCE(?, items_json),
+          notes_json = COALESCE(?, notes_json),
+          updated_at = datetime('now')
+      WHERE freshcart_order_id = ? AND status NOT IN ('CAPTURED', 'AUTHORIZED')
+    `);
+        const result = stmt.run(data.razorpay_order_id, data.amount, data.amount_in_paise, currency, data.customer_name || null, data.customer_email || null, data.customer_phone || null, itemsJson, notesJson, data.freshcart_order_id);
+        return result.changes > 0;
+    }
     static getOrderByFreshCartId(freshcartOrderId) {
         const stmt = db.prepare(`SELECT * FROM orders WHERE freshcart_order_id = ?`);
         return stmt.get(freshcartOrderId) || null;

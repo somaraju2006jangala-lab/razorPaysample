@@ -1,8 +1,9 @@
+process.env.NODE_ENV = 'test';
 import assert from 'assert';
 import crypto from 'crypto';
 import http from 'http';
 import { app } from '../src/app.js';
-import { config } from '../src/config/index.js';
+import { config, razorpayInstance } from '../src/config/index.js';
 import { PaymentPersistenceService } from '../src/services/paymentPersistenceService.js';
 import { initDatabase } from '../src/database/db.js';
 
@@ -36,6 +37,52 @@ async function request(path: string, options: { method?: string; headers?: Recor
 async function runTests() {
   console.log('🚀 Running Fresh-Cart Payment Gateway Comprehensive Test Suite...\n');
   initDatabase();
+
+  // Requirement 8: Use mocked Razorpay responses only. Do not make real Razorpay API payment attempts or charges.
+  let mockOrderSeq = 1000;
+  (razorpayInstance.orders as any).create = async (params: any) => {
+    mockOrderSeq++;
+    return {
+      id: `order_mock_${mockOrderSeq}_${Date.now()}`,
+      entity: 'order',
+      amount: params.amount,
+      amount_paid: 0,
+      amount_due: params.amount,
+      currency: params.currency || 'INR',
+      receipt: params.receipt,
+      status: 'created',
+      attempts: 0,
+      notes: params.notes || {},
+      created_at: Math.floor(Date.now() / 1000),
+    };
+  };
+
+  (razorpayInstance.payments as any).fetch = async (paymentId: string) => {
+    return {
+      id: paymentId,
+      entity: 'payment',
+      amount: 50000,
+      currency: 'INR',
+      status: 'captured',
+      order_id: 'order_mock_test',
+      method: 'upi',
+      captured: true,
+      created_at: Math.floor(Date.now() / 1000),
+    };
+  };
+
+  (razorpayInstance.payments as any).refund = async (paymentId: string, params: any) => {
+    return {
+      id: `rfnd_mock_${Date.now()}`,
+      entity: 'refund',
+      amount: params.amount || 50000,
+      currency: params.currency || 'INR',
+      payment_id: paymentId,
+      status: 'processed',
+      speed: 'optimum',
+      created_at: Math.floor(Date.now() / 1000),
+    };
+  };
 
   server = app.listen(5099);
 
@@ -280,10 +327,381 @@ async function runTests() {
     );
   });
 
+  // 5c. Stale Preloaded Order (Cart Details / Amount Changed)
+  await test('Scenario 6c: Stale Preloaded Order Invalidation & Fresh Order Creation on Amount Change', async () => {
+    const staleTestOrderId = `FC-STALE-${Date.now()}`;
+
+    // Initial preloaded order with amount 400
+    const initialOrder = await request('/api/orders/create', {
+      method: 'POST',
+      body: {
+        freshcart_order_id: staleTestOrderId,
+        amount: 400,
+        currency: 'INR',
+        customer: { name: 'Cart Modifier', email: 'modifier@example.com', phone: '9876543210' },
+      },
+    });
+    assert.strictEqual(initialOrder.status, 201, 'Initial preloaded order creation should succeed');
+    const initialRzpId = initialOrder.data.data.razorpay_order_id;
+    assert.strictEqual(initialOrder.data.data.amount, 400);
+
+    // Customer modifies cart/items: attempting to reuse same freshcart_order_id with different amount 750 must return 409 Conflict
+    const conflictingOrder = await request('/api/orders/create', {
+      method: 'POST',
+      body: {
+        freshcart_order_id: staleTestOrderId,
+        amount: 750,
+        currency: 'INR',
+        customer: { name: 'Cart Modifier', email: 'modifier@example.com', phone: '9876543210' },
+      },
+    });
+    assert.strictEqual(conflictingOrder.status, 409, 'Reusing same order ID with different amount must return 409 Conflict');
+    assert.strictEqual(conflictingOrder.data.success, false);
+
+    // Customer generates fresh order ID for the modified cart amount 750: succeeds cleanly
+    const freshOrderId = `${staleTestOrderId}-v2`;
+    const updatedOrder = await request('/api/orders/create', {
+      method: 'POST',
+      body: {
+        freshcart_order_id: freshOrderId,
+        amount: 750,
+        currency: 'INR',
+        customer: { name: 'Cart Modifier', email: 'modifier@example.com', phone: '9876543210' },
+      },
+    });
+    assert.strictEqual(updatedOrder.status, 201, 'Fresh order for modified cart must return 201 Created');
+    assert.notStrictEqual(
+      updatedOrder.data.data.razorpay_order_id,
+      initialRzpId,
+      'Stale Razorpay order must NOT be reused when amount changes'
+    );
+    assert.strictEqual(updatedOrder.data.data.amount, 750, 'New order must reflect updated amount ₹750');
+    assert.strictEqual(updatedOrder.data.data.amount_in_paise, 75000);
+
+    // Verify initial DB order was NOT overwritten or corrupted
+    const dbOrder = PaymentPersistenceService.getOrderByFreshCartId(staleTestOrderId);
+    assert.ok(dbOrder, 'Initial order must exist in database');
+    assert.strictEqual(dbOrder.amount, 400, 'Original database order amount must NOT be altered');
+    assert.strictEqual(dbOrder.razorpay_order_id, initialRzpId);
+  });
+
+  // 5d. Preload Failure Recovery
+  await test('Scenario 6d: Preload Failure Recovery (Safe Fallback after Failed Attempt)', async () => {
+    const failRecoveryOrderId = `FC-FAIL-RECOVERY-${Date.now()}`;
+
+    // Attempt invalid order (e.g. invalid amount 0)
+    const invalidRes = await request('/api/orders/create', {
+      method: 'POST',
+      body: {
+        freshcart_order_id: failRecoveryOrderId,
+        amount: 0,
+        currency: 'INR',
+        customer: { name: 'Retry User', email: 'retry@example.com', phone: '9876543210' },
+      },
+    });
+    assert.strictEqual(invalidRes.status, 400, 'Invalid preload attempt must return 400 Bad Request');
+
+    // Subsequent valid user click creates order cleanly
+    const validRes = await request('/api/orders/create', {
+      method: 'POST',
+      body: {
+        freshcart_order_id: failRecoveryOrderId,
+        amount: 600,
+        currency: 'INR',
+        customer: { name: 'Retry User', email: 'retry@example.com', phone: '9876543210' },
+      },
+    });
+    assert.strictEqual(validRes.status, 201, 'Subsequent valid order request must succeed');
+    assert.ok(validRes.data.data.razorpay_order_id, 'Valid Razorpay order must be returned');
+  });
+
+  // 5e. Concurrent Duplicate Order Requests (Identical Amounts and Currencies)
+  await test('Scenario 6e: Concurrent Duplicate Order Requests Return Identical Razorpay Order (Identical Amounts & Currencies)', async () => {
+    const concurrentOrderId = `FC-CONCURRENT-${Date.now()}`;
+
+    // Fire 3 parallel requests simultaneously with identical amounts and currencies
+    const [res1, res2, res3] = await Promise.all([
+      request('/api/orders/create', {
+        method: 'POST',
+        body: {
+          freshcart_order_id: concurrentOrderId,
+          amount: 500,
+          currency: 'INR',
+          customer: { name: 'Concurrent User', email: 'concurrent@example.com', phone: '9876543210' },
+        },
+      }),
+      request('/api/orders/create', {
+        method: 'POST',
+        body: {
+          freshcart_order_id: concurrentOrderId,
+          amount: 500,
+          currency: 'INR',
+          customer: { name: 'Concurrent User', email: 'concurrent@example.com', phone: '9876543210' },
+        },
+      }),
+      request('/api/orders/create', {
+        method: 'POST',
+        body: {
+          freshcart_order_id: concurrentOrderId,
+          amount: 500,
+          currency: 'INR',
+          customer: { name: 'Concurrent User', email: 'concurrent@example.com', phone: '9876543210' },
+        },
+      }),
+    ]);
+
+    // All should succeed (one creates with 201, others reuse with 200)
+    assert.ok([200, 201].includes(res1.status), `Res 1 status must be 200 or 201, got ${res1.status}`);
+    assert.ok([200, 201].includes(res2.status), `Res 2 status must be 200 or 201, got ${res2.status}`);
+    assert.ok([200, 201].includes(res3.status), `Res 3 status must be 200 or 201, got ${res3.status}`);
+
+    const id1 = res1.data.data.razorpay_order_id;
+    const id2 = res2.data.data.razorpay_order_id;
+    const id3 = res3.data.data.razorpay_order_id;
+
+    assert.strictEqual(id1, id2, 'Concurrent requests must resolve to the identical Razorpay Order ID');
+    assert.strictEqual(id2, id3, 'Concurrent requests must resolve to the identical Razorpay Order ID');
+
+    // Verify database values match the returned values exactly
+    const dbOrder = PaymentPersistenceService.getOrderByFreshCartId(concurrentOrderId);
+    assert.ok(dbOrder, 'Database order must exist');
+    assert.strictEqual(dbOrder.razorpay_order_id, id1, 'Database order ID must match returned Razorpay order ID');
+    assert.strictEqual(dbOrder.amount, 500, 'Database amount must match returned amount');
+    assert.strictEqual(dbOrder.amount_in_paise, 50000, 'Database paise must match returned paise');
+    assert.strictEqual(dbOrder.currency, 'INR', 'Database currency must match returned currency');
+  });
+
+  // 5f. Simultaneous Requests With Different Amounts Conflict Protection (New and Existing Unpaid)
+  await test('Scenario 6f: Simultaneous Requests With Different Amounts Reject Mismatch with 409 Conflict', async () => {
+    // Sub-case 1: Simultaneous requests on a NEW order ID with different amounts
+    const diffAmountOrderId = `FC-DIFF-${Date.now()}`;
+    const [resA, resB] = await Promise.all([
+      request('/api/orders/create', {
+        method: 'POST',
+        body: {
+          freshcart_order_id: diffAmountOrderId,
+          amount: 400,
+          currency: 'INR',
+          customer: { name: 'Diff User A', email: 'userA@example.com', phone: '9876543210' },
+        },
+      }),
+      request('/api/orders/create', {
+        method: 'POST',
+        body: {
+          freshcart_order_id: diffAmountOrderId,
+          amount: 750,
+          currency: 'INR',
+          customer: { name: 'Diff User B', email: 'userB@example.com', phone: '9876543210' },
+        },
+      }),
+    ]);
+
+    const successRes = resA.status === 201 ? resA : resB;
+    const conflictRes = resA.status === 409 ? resA : resB;
+
+    assert.strictEqual(successRes.status, 201, 'One request must succeed with 201 Created');
+    assert.strictEqual(conflictRes.status, 409, 'Concurrent request with different amount must be rejected with 409 Conflict');
+    assert.strictEqual(conflictRes.data.success, false);
+    assert.ok(
+      conflictRes.data.error.includes('conflict') || conflictRes.data.error.includes('mismatch'),
+      'Error message must describe the order amount conflict'
+    );
+
+    // Verify database amount strictly matches the successful request only
+    const savedOrder = PaymentPersistenceService.getOrderByFreshCartId(diffAmountOrderId);
+    assert.ok(savedOrder, 'Saved order must exist in DB');
+    assert.strictEqual(savedOrder.amount, successRes.data.data.amount, 'Database amount must match successful request');
+    assert.strictEqual(savedOrder.amount_in_paise, successRes.data.data.amount_in_paise);
+    assert.strictEqual(savedOrder.razorpay_order_id, successRes.data.data.razorpay_order_id);
+
+    // Sub-case 2: Simultaneous requests on an ALREADY EXISTING unpaid order with different amounts
+    const existingUnpaidOrderId = `FC-EXISTING-UNPAID-${Date.now()}`;
+    const initialCreate = await request('/api/orders/create', {
+      method: 'POST',
+      body: {
+        freshcart_order_id: existingUnpaidOrderId,
+        amount: 300,
+        currency: 'INR',
+        customer: { name: 'Existing User', email: 'exist@example.com', phone: '9876543210' },
+      },
+    });
+    assert.strictEqual(initialCreate.status, 201);
+    const existingRzpId = initialCreate.data.data.razorpay_order_id;
+
+    // Fire 2 concurrent requests with different amounts (550 and 650) on this existing order
+    const [concurrentA, concurrentB] = await Promise.all([
+      request('/api/orders/create', {
+        method: 'POST',
+        body: {
+          freshcart_order_id: existingUnpaidOrderId,
+          amount: 550,
+          currency: 'INR',
+          customer: { name: 'Existing User', email: 'exist@example.com', phone: '9876543210' },
+        },
+      }),
+      request('/api/orders/create', {
+        method: 'POST',
+        body: {
+          freshcart_order_id: existingUnpaidOrderId,
+          amount: 650,
+          currency: 'INR',
+          customer: { name: 'Existing User', email: 'exist@example.com', phone: '9876543210' },
+        },
+      }),
+    ]);
+
+    // BOTH concurrent conflicting requests must receive 409 Conflict (neither overwrites DB)
+    assert.strictEqual(concurrentA.status, 409, 'Request A with conflicting amount must return 409');
+    assert.strictEqual(concurrentB.status, 409, 'Request B with conflicting amount must return 409');
+
+    // Verify existing database order remains completely unmodified
+    const postOrder = PaymentPersistenceService.getOrderByFreshCartId(existingUnpaidOrderId);
+    assert.ok(postOrder);
+    assert.strictEqual(postOrder.amount, 300, 'Database amount must remain original ₹300');
+    assert.strictEqual(postOrder.razorpay_order_id, existingRzpId, 'Razorpay order ID must remain original');
+  });
+
+  // 5h. Currency Validation & Unsupported Currency Request Rejection
+  await test('Scenario 6h: Unsupported Currency Requests (USD) Rejected with 400 & Preserves Existing Order', async () => {
+    // Sub-case 1: Simultaneous requests on a NEW order ID where one request specifies valid INR and the other specifies unsupported USD
+    const diffCurrencyOrderId = `FC-DIFF-CURR-${Date.now()}`;
+    const [resCurrA, resCurrB] = await Promise.all([
+      request('/api/orders/create', {
+        method: 'POST',
+        body: {
+          freshcart_order_id: diffCurrencyOrderId,
+          amount: 500,
+          currency: 'INR',
+          customer: { name: 'Currency User A', email: 'currA@example.com', phone: '9876543210' },
+        },
+      }),
+      request('/api/orders/create', {
+        method: 'POST',
+        body: {
+          freshcart_order_id: diffCurrencyOrderId,
+          amount: 500,
+          currency: 'USD',
+          customer: { name: 'Currency User B', email: 'currB@example.com', phone: '9876543210' },
+        },
+      }),
+    ]);
+
+    // Valid INR request succeeds with 201 Created
+    assert.strictEqual(resCurrA.status, 201, 'Valid INR request must succeed with 201 Created');
+    assert.strictEqual(resCurrA.data.data.currency, 'INR');
+    const validRzpOrderId = resCurrA.data.data.razorpay_order_id;
+    assert.ok(validRzpOrderId, 'Valid Razorpay order ID must be returned');
+
+    // Unsupported USD request is rejected by schema validation with 400 Bad Request
+    assert.strictEqual(resCurrB.status, 400, 'Unsupported currency request (USD) must be rejected with 400 Bad Request');
+    assert.strictEqual(resCurrB.data.success, false);
+    assert.ok(
+      JSON.stringify(resCurrB.data).includes('Only INR currency is currently supported'),
+      'Error message must state that only INR is supported'
+    );
+
+    // Verify database record strictly preserves the valid INR order
+    const savedCurrOrder = PaymentPersistenceService.getOrderByFreshCartId(diffCurrencyOrderId);
+    assert.ok(savedCurrOrder, 'Database order must exist');
+    assert.strictEqual(savedCurrOrder.currency, 'INR', 'Database currency must remain INR');
+    assert.strictEqual(savedCurrOrder.amount, 500, 'Database amount must remain 500');
+    assert.strictEqual(savedCurrOrder.razorpay_order_id, validRzpOrderId, 'Database Razorpay order ID must match original INR order');
+
+    // Sub-case 2: Sequential request with unsupported USD on an existing INR order
+    const subsequentUsdAttempt = await request('/api/orders/create', {
+      method: 'POST',
+      body: {
+        freshcart_order_id: diffCurrencyOrderId,
+        amount: 500,
+        currency: 'USD',
+        customer: { name: 'Currency User C', email: 'currC@example.com', phone: '9876543210' },
+      },
+    });
+    assert.strictEqual(subsequentUsdAttempt.status, 400, 'Subsequent USD request must be rejected with 400 Bad Request');
+
+    // Verify database record remains completely unchanged
+    const finalOrderCheck = PaymentPersistenceService.getOrderByFreshCartId(diffCurrencyOrderId);
+    assert.ok(finalOrderCheck);
+    assert.strictEqual(finalOrderCheck.currency, 'INR', 'Currency must remain INR');
+    assert.strictEqual(finalOrderCheck.amount, 500, 'Amount must remain 500');
+    assert.strictEqual(finalOrderCheck.razorpay_order_id, validRzpOrderId, 'Razorpay order ID must remain unchanged');
+  });
+
+  // 5g. Protection of Already-Paid and Authorized Orders Against Simultaneous Modification
+  await test('Scenario 6g: Simultaneous Requests on Already-Paid and Authorized Orders Reject Modification', async () => {
+    const paidOrderId = `FC-PAID-PROTECT-${Date.now()}`;
+
+    // 1. Create order
+    const createRes = await request('/api/orders/create', {
+      method: 'POST',
+      body: {
+        freshcart_order_id: paidOrderId,
+        amount: 500,
+        currency: 'INR',
+        customer: { name: 'Paid User', email: 'paid@example.com', phone: '9876543210' },
+      },
+    });
+    assert.strictEqual(createRes.status, 201);
+    const rzpPaidOrderId = createRes.data.data.razorpay_order_id;
+
+    // 2. Simulate payment completion & capture
+    const paymentId = `pay_captured_${Date.now()}`;
+    const sigText = `${rzpPaidOrderId}|${paymentId}`;
+    const validSig = crypto
+      .createHmac('sha256', config.razorpay.keySecret)
+      .update(sigText)
+      .digest('hex');
+
+    const verifyRes = await request('/api/payments/verify', {
+      method: 'POST',
+      body: {
+        freshcart_order_id: paidOrderId,
+        razorpay_order_id: rzpPaidOrderId,
+        razorpay_payment_id: paymentId,
+        razorpay_signature: validSig,
+      },
+    });
+    assert.strictEqual(verifyRes.status, 200);
+    assert.strictEqual(verifyRes.data.data.status, 'CAPTURED');
+
+    // 3. Fire simultaneous requests: one with identical amount (500) and one with different amount (999)
+    const [sameAmtAttempt, diffAmtAttempt] = await Promise.all([
+      request('/api/orders/create', {
+        method: 'POST',
+        body: {
+          freshcart_order_id: paidOrderId,
+          amount: 500,
+          currency: 'INR',
+          customer: { name: 'Paid User', email: 'paid@example.com', phone: '9876543210' },
+        },
+      }),
+      request('/api/orders/create', {
+        method: 'POST',
+        body: {
+          freshcart_order_id: paidOrderId,
+          amount: 999,
+          currency: 'INR',
+          customer: { name: 'Paid User', email: 'paid@example.com', phone: '9876543210' },
+        },
+      }),
+    ]);
+
+    // BOTH requests must return 409 Conflict
+    assert.strictEqual(sameAmtAttempt.status, 409, 'Attempt to create captured order must return 409 Conflict');
+    assert.strictEqual(diffAmtAttempt.status, 409, 'Attempt to modify captured order amount must return 409 Conflict');
+
+    // 4. Verify database order was NOT altered
+    const dbOrder = PaymentPersistenceService.getOrderByFreshCartId(paidOrderId);
+    assert.ok(dbOrder);
+    assert.strictEqual(dbOrder.status, 'CAPTURED', 'Status must remain CAPTURED');
+    assert.strictEqual(dbOrder.amount, 500, 'Amount must remain original ₹500');
+    assert.strictEqual(dbOrder.razorpay_order_id, rzpPaidOrderId, 'Razorpay order ID must remain original');
+  });
+
   // 6. Payment Failure / Cancelled Checkout
   await test('Scenario 3 & 4: Failed Transaction & Cancelled Checkout Logging', async () => {
     const cancelOrderId = `FC-CANCEL-${Date.now()}`;
-    await request('/api/orders/create', {
+    const createRes = await request('/api/orders/create', {
       method: 'POST',
       body: {
         freshcart_order_id: cancelOrderId,
@@ -292,6 +710,7 @@ async function runTests() {
         customer: { name: 'User Cancelled', email: 'cancel@example.com', phone: '9811223344' },
       },
     });
+    assert.strictEqual(createRes.status, 201, 'Order creation for cancel test must succeed');
 
     const reportRes = await request('/api/payments/report-failure', {
       method: 'POST',

@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { RazorpayService } from '../services/razorpayService.js';
 import { PaymentPersistenceService } from '../services/paymentPersistenceService.js';
 import { config } from '../config/index.js';
+import { orderLock } from '../utils/keyedAsyncLock.js';
 const createOrderSchema = z.object({
     freshcart_order_id: z.string().min(3, 'Order ID must be at least 3 characters'),
     amount: z.number().positive('Amount must be greater than 0'),
@@ -19,7 +20,8 @@ const createOrderSchema = z.object({
 export class OrderController {
     /**
      * POST /api/orders/create
-     * Creates a payment order, registers in DB, and returns Razorpay Order ID + Public Key ID
+     * Creates a payment order, registers in DB, and returns Razorpay Order ID + Public Key ID.
+     * Completely serialized per freshcart_order_id to eliminate concurrency race conditions.
      */
     static async createOrder(req, res, next) {
         try {
@@ -33,88 +35,155 @@ export class OrderController {
                 return;
             }
             const { freshcart_order_id, amount, currency, customer, items, notes } = parsed.data;
-            console.log(`[OrderController] Processing createOrder for ${freshcart_order_id} (Amount: ₹${amount})`);
-            // Duplicate payment protection / Idempotency check:
-            const existingOrder = PaymentPersistenceService.getOrderByFreshCartId(freshcart_order_id);
-            if (existingOrder && (existingOrder.status === 'CAPTURED' || existingOrder.status === 'AUTHORIZED')) {
-                res.status(409).json({
-                    success: false,
-                    error: `Order ${freshcart_order_id} has already been paid for and captured.`,
-                    status: existingOrder.status,
-                    razorpay_order_id: existingOrder.razorpay_order_id,
+            console.log(`[OrderController] Processing createOrder for ${freshcart_order_id} (Amount: ₹${amount} ${currency})`);
+            // Serialize the complete order-creation workflow per freshcart_order_id
+            // to eliminate concurrent-request race conditions and database desynchronization
+            await orderLock.runExclusive(freshcart_order_id, async () => {
+                // Step 1: Duplicate payment protection / Idempotency check:
+                const existingOrder = PaymentPersistenceService.getOrderByFreshCartId(freshcart_order_id);
+                // Safeguard 1: Never overwrite or reuse an already paid or authorized order
+                if (existingOrder && (existingOrder.status === 'CAPTURED' || existingOrder.status === 'AUTHORIZED')) {
+                    res.status(409).json({
+                        success: false,
+                        error: `Order ${freshcart_order_id} has already been paid for and captured.`,
+                        status: existingOrder.status,
+                        razorpay_order_id: existingOrder.razorpay_order_id,
+                    });
+                    return;
+                }
+                // Step 2: Idempotency & Conflict Check on Existing Order
+                if (existingOrder) {
+                    const isMatchingAmount = existingOrder.amount === amount;
+                    const isMatchingCurrency = (existingOrder.currency || 'INR').toUpperCase() === currency.toUpperCase();
+                    if (isMatchingAmount && isMatchingCurrency && existingOrder.status === 'CREATED' && existingOrder.razorpay_order_id) {
+                        console.log(`[OrderController] Idempotent hit: Reusing active Razorpay order ${existingOrder.razorpay_order_id} for ${freshcart_order_id}`);
+                        res.status(200).json({
+                            success: true,
+                            data: {
+                                key_id: config.razorpay.keyId,
+                                razorpay_order_id: existingOrder.razorpay_order_id,
+                                freshcart_order_id,
+                                amount: existingOrder.amount,
+                                amount_in_paise: existingOrder.amount_in_paise,
+                                currency: existingOrder.currency,
+                                customer,
+                                payment_mode: config.paymentMode,
+                                is_simulated: existingOrder.razorpay_order_id.startsWith('order_sim_') || false,
+                            },
+                        });
+                        return;
+                    }
+                    // If amounts or currencies conflict, REJECT with 409 Conflict!
+                    // Never overwrite or update the order with mismatched values.
+                    console.warn(`[OrderController] Order modification conflict for ${freshcart_order_id}: existing is ₹${existingOrder.amount} ${existingOrder.currency}, but received request for ₹${amount} ${currency}`);
+                    res.status(409).json({
+                        success: false,
+                        error: `Concurrent order modification conflict for ${freshcart_order_id}: an active order exists for ₹${existingOrder.amount} ${existingOrder.currency}, but received request for ₹${amount} ${currency}.`,
+                        status: existingOrder.status,
+                        existing_amount: existingOrder.amount,
+                        existing_currency: existingOrder.currency,
+                        requested_amount: amount,
+                        requested_currency: currency,
+                    });
+                    return;
+                }
+                // Step 3: No order exists yet in DB for this freshcart_order_id.
+                // Create Razorpay order via official SDK
+                const razorpayOrder = await RazorpayService.createOrder({
+                    amount,
+                    currency,
+                    receipt: freshcart_order_id,
+                    notes: {
+                        freshcart_order_id,
+                        customer_name: customer.name,
+                        customer_email: customer.email,
+                        customer_phone: customer.phone,
+                        ...(notes || {}),
+                    },
                 });
-                return;
-            }
-            // Performance & Idempotency: If an active unpaid order already exists with the same amount,
-            // return it immediately to avoid duplicate external API roundtrips to Razorpay servers.
-            if (existingOrder &&
-                existingOrder.status === 'CREATED' &&
-                existingOrder.razorpay_order_id &&
-                existingOrder.amount === amount) {
-                console.log(`[OrderController] Idempotent hit: Reusing active Razorpay order ${existingOrder.razorpay_order_id} for ${freshcart_order_id}`);
-                res.status(200).json({
+                // Step 4: Persist newly created order in DB
+                try {
+                    PaymentPersistenceService.createOrder({
+                        freshcart_order_id,
+                        razorpay_order_id: razorpayOrder.id,
+                        amount,
+                        currency,
+                        customer_name: customer.name,
+                        customer_email: customer.email,
+                        customer_phone: customer.phone,
+                        items,
+                        notes,
+                    });
+                }
+                catch (insertError) {
+                    // Defense-in-depth: SQLite insert-conflict safeguards (e.g. across multiple worker processes)
+                    if (insertError.message?.includes('UNIQUE constraint failed') ||
+                        insertError.code === 'SQLITE_CONSTRAINT' ||
+                        insertError.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+                        console.log(`[OrderController] Insert conflict detected for ${freshcart_order_id}. Validating committed order...`);
+                        const committedOrder = PaymentPersistenceService.getOrderByFreshCartId(freshcart_order_id);
+                        if (committedOrder) {
+                            if (committedOrder.status === 'CAPTURED' || committedOrder.status === 'AUTHORIZED') {
+                                res.status(409).json({
+                                    success: false,
+                                    error: `Order ${freshcart_order_id} has already been paid for and captured.`,
+                                    status: committedOrder.status,
+                                    razorpay_order_id: committedOrder.razorpay_order_id,
+                                });
+                                return;
+                            }
+                            const isExactMatch = committedOrder.freshcart_order_id === freshcart_order_id &&
+                                committedOrder.amount === amount &&
+                                committedOrder.amount_in_paise === Math.round(amount * 100) &&
+                                (committedOrder.currency || 'INR').toUpperCase() === currency.toUpperCase();
+                            if (isExactMatch && committedOrder.status === 'CREATED' && committedOrder.razorpay_order_id) {
+                                console.log(`[OrderController] Matching order reuse for ${freshcart_order_id} (Amount: ₹${amount})`);
+                                res.status(200).json({
+                                    success: true,
+                                    data: {
+                                        key_id: config.razorpay.keyId,
+                                        razorpay_order_id: committedOrder.razorpay_order_id,
+                                        freshcart_order_id,
+                                        amount: committedOrder.amount,
+                                        amount_in_paise: committedOrder.amount_in_paise,
+                                        currency: committedOrder.currency,
+                                        customer,
+                                        payment_mode: config.paymentMode,
+                                        is_simulated: committedOrder.razorpay_order_id.startsWith('order_sim_') || false,
+                                    },
+                                });
+                                return;
+                            }
+                            res.status(409).json({
+                                success: false,
+                                error: `Concurrent order modification conflict for ${freshcart_order_id}: an active order exists for ₹${committedOrder.amount} ${committedOrder.currency}, but received concurrent request for ₹${amount} ${currency}.`,
+                                status: committedOrder.status,
+                                existing_amount: committedOrder.amount,
+                                existing_currency: committedOrder.currency,
+                                requested_amount: amount,
+                                requested_currency: currency,
+                            });
+                            return;
+                        }
+                    }
+                    throw insertError;
+                }
+                // Step 5: Return 201 Created with the verified newly created order
+                console.log(`[OrderController] Created new Razorpay order ${razorpayOrder.id} for ${freshcart_order_id}`);
+                res.status(201).json({
                     success: true,
                     data: {
                         key_id: config.razorpay.keyId,
-                        razorpay_order_id: existingOrder.razorpay_order_id,
+                        razorpay_order_id: razorpayOrder.id,
                         freshcart_order_id,
-                        amount: existingOrder.amount,
-                        amount_in_paise: existingOrder.amount_in_paise,
-                        currency: existingOrder.currency,
+                        amount,
+                        amount_in_paise: Math.round(amount * 100),
+                        currency,
                         customer,
                         payment_mode: config.paymentMode,
-                        is_simulated: existingOrder.razorpay_order_id.startsWith('order_sim_') || false,
+                        is_simulated: razorpayOrder.isSimulated || false,
                     },
                 });
-                return;
-            }
-            // Create Razorpay order via official SDK
-            const razorpayOrder = await RazorpayService.createOrder({
-                amount,
-                currency,
-                receipt: freshcart_order_id,
-                notes: {
-                    freshcart_order_id,
-                    customer_name: customer.name,
-                    customer_email: customer.email,
-                    customer_phone: customer.phone,
-                    ...(notes || {}),
-                },
-            });
-            // Persist order in database
-            if (existingOrder) {
-                // Reuse or update order
-                PaymentPersistenceService.updateRazorpayOrderId(freshcart_order_id, razorpayOrder.id);
-                PaymentPersistenceService.updateOrderStatus(freshcart_order_id, 'CREATED');
-            }
-            else {
-                PaymentPersistenceService.createOrder({
-                    freshcart_order_id,
-                    razorpay_order_id: razorpayOrder.id,
-                    amount,
-                    currency,
-                    customer_name: customer.name,
-                    customer_email: customer.email,
-                    customer_phone: customer.phone,
-                    items,
-                    notes,
-                });
-            }
-            // Return ONLY public key and order metadata
-            console.log(`[OrderController] Created new Razorpay order ${razorpayOrder.id} for ${freshcart_order_id}`);
-            res.status(201).json({
-                success: true,
-                data: {
-                    key_id: config.razorpay.keyId,
-                    razorpay_order_id: razorpayOrder.id,
-                    freshcart_order_id,
-                    amount,
-                    amount_in_paise: Math.round(amount * 100),
-                    currency,
-                    customer,
-                    payment_mode: config.paymentMode,
-                    is_simulated: razorpayOrder.isSimulated || false,
-                },
             });
         }
         catch (error) {
