@@ -33,6 +33,7 @@ export class OrderController {
                 return;
             }
             const { freshcart_order_id, amount, currency, customer, items, notes } = parsed.data;
+            console.log(`[OrderController] Processing createOrder for ${freshcart_order_id} (Amount: ₹${amount})`);
             // Duplicate payment protection / Idempotency check:
             const existingOrder = PaymentPersistenceService.getOrderByFreshCartId(freshcart_order_id);
             if (existingOrder && (existingOrder.status === 'CAPTURED' || existingOrder.status === 'AUTHORIZED')) {
@@ -50,6 +51,7 @@ export class OrderController {
                 existingOrder.status === 'CREATED' &&
                 existingOrder.razorpay_order_id &&
                 existingOrder.amount === amount) {
+                console.log(`[OrderController] Idempotent hit: Reusing active Razorpay order ${existingOrder.razorpay_order_id} for ${freshcart_order_id}`);
                 res.status(200).json({
                     success: true,
                     data: {
@@ -99,6 +101,7 @@ export class OrderController {
                 });
             }
             // Return ONLY public key and order metadata
+            console.log(`[OrderController] Created new Razorpay order ${razorpayOrder.id} for ${freshcart_order_id}`);
             res.status(201).json({
                 success: true,
                 data: {

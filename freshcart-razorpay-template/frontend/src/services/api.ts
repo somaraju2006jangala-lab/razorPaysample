@@ -35,35 +35,84 @@ export class PaymentApiService {
   }
 
   /**
-   * Internal wrapper around fetch with configurable timeout and meaningful error messages.
+   * Internal wrapper around fetch with configurable timeout, automatic retry for transient
+   * network / Render cold-start proxy errors (502, 503, 504), and meaningful error messages.
+   * Never exposes credentials, secrets, or sensitive details in error outputs.
    */
-  private static async fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs = 20000): Promise<Response> {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  private static async fetchWithTimeout(
+    url: string,
+    options: RequestInit = {},
+    timeoutMs = 30000,
+    retries = 0,
+    retryDelayMs = 2000
+  ): Promise<Response> {
+    let lastError: any = null;
 
-    try {
-      const response = await fetch(url, {
-        ...options,
-        signal: controller.signal,
-      });
-      return response;
-    } catch (err: any) {
-      if (err.name === 'AbortError') {
-        throw new Error(
-          'Request timed out. The backend server might be spinning up (Render cold start) or your connection is slow. Please retry.'
-        );
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+      try {
+        if (attempt > 0) {
+          console.warn(`[PaymentGateway] Retrying request (attempt ${attempt + 1}/${retries + 1})...`);
+        }
+
+        const response = await fetch(url, {
+          ...options,
+          signal: controller.signal,
+        });
+
+        // Handle temporary Render cold-start gateway errors (502 Bad Gateway, 503 Service Unavailable, 504 Gateway Timeout)
+        if (
+          (response.status === 502 || response.status === 503 || response.status === 504) &&
+          attempt < retries
+        ) {
+          console.warn(
+            `[PaymentGateway] Backend proxy returned HTTP ${response.status} (container waking up). Retrying in ${retryDelayMs}ms...`
+          );
+          await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+          continue;
+        }
+
+        return response;
+      } catch (err: any) {
+        lastError = err;
+        const isAbort = err.name === 'AbortError';
+        const isNetworkError =
+          err.message &&
+          (err.message.includes('Failed to fetch') ||
+            err.message.includes('NetworkError') ||
+            err.message.includes('network'));
+
+        // If request timed out or experienced temporary connection drop while container was booting, retry if attempts remain
+        if (attempt < retries && (isAbort || isNetworkError)) {
+          console.warn(
+            `[PaymentGateway] Attempt ${attempt + 1} ${isAbort ? 'timed out' : 'network dropped'}. Server may be spinning up. Retrying in ${retryDelayMs}ms...`
+          );
+          await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+          continue;
+        }
+
+        if (isAbort) {
+          throw new Error(
+            'Request timed out. The backend server might be spinning up (Render cold start) or your connection is slow. Please retry.'
+          );
+        }
+        if (isNetworkError) {
+          throw new Error('Unable to connect to the backend server. Please verify network connectivity.');
+        }
+        throw err;
+      } finally {
+        clearTimeout(timeoutId);
       }
-      if (err.message && err.message.includes('Failed to fetch')) {
-        throw new Error('Unable to connect to the backend server. Please verify network connectivity.');
-      }
-      throw err;
-    } finally {
-      clearTimeout(timeoutId);
     }
+
+    throw lastError || new Error('Request failed after retries.');
   }
 
   /**
-   * Cached health check: avoids multiple redundant requests from MainLayout & PaymentSelectionPage.
+   * Cached health check & proactive container pre-warming probe.
+   * Avoids multiple redundant requests and gracefully handles cold starts.
    */
   static async checkHealth(): Promise<HealthResponse> {
     const now = Date.now();
@@ -77,11 +126,15 @@ export class PaymentApiService {
 
     this.healthInFlight = (async () => {
       try {
-        const res = await this.fetchWithTimeout(`${API_BASE}/health`, {}, 8000);
+        console.log('[PaymentGateway] Checking backend health / pre-warming container...');
+        // 45s timeout and 1 retry to accommodate Render cold start on initial visit
+        const res = await this.fetchWithTimeout(`${API_BASE}/health`, {}, 45000, 1, 2000);
         const data = await res.json();
+        console.log(`[PaymentGateway] Backend healthy (Mode: ${data.payment_mode || 'unknown'}, Env: ${data.environment || 'unknown'})`);
         this.cachedHealth = { data, timestamp: Date.now() };
         return data;
-      } catch {
+      } catch (err: any) {
+        console.warn('[PaymentGateway] Gateway health probe notice:', err.message);
         const fallback: HealthResponse = { status: 'offline', payment_mode: 'test', environment: 'development' };
         return fallback;
       } finally {
@@ -93,17 +146,22 @@ export class PaymentApiService {
   }
 
   /**
-   * Creates or retrieves a Razorpay order with timeout and duplicate-request protection.
+   * Creates or retrieves a Razorpay order with cold-start tolerance, retry logic, and idempotency protection.
+   * Does NOT create duplicate orders because the backend identifies existing orders by freshcart_order_id.
    */
   static async createOrder(order: OrderDetails): Promise<RazorpayOrderResponse> {
     const orderKey = `${order.freshcart_order_id}_${order.total_payable}`;
     const existingPromise = this.orderInFlight.get(orderKey);
     if (existingPromise) {
+      console.log(`[PaymentGateway] Reusing in-flight order request for ${order.freshcart_order_id}`);
       return existingPromise;
     }
 
     const orderPromise = (async () => {
       try {
+        console.log(`[PaymentGateway] Initiating payment order for ${order.freshcart_order_id} (Amount: ₹${order.total_payable})...`);
+        // 55s timeout per attempt with 2 retries (up to 3 attempts total)
+        // Accommodates Render 40-50s cold start while preventing duplicate order creation
         const res = await this.fetchWithTimeout(
           `${API_BASE}/orders/create`,
           {
@@ -124,14 +182,20 @@ export class PaymentApiService {
               },
             }),
           },
-          25000 // 25s timeout for order creation (handles Render cold start)
+          55000,
+          2,
+          2000
         );
 
         const data = await res.json();
         if (!res.ok || !data.success) {
           throw new Error(data.error || 'Failed to initialize payment order');
         }
+        console.log(`[PaymentGateway] Order initialized successfully: ${data.data.razorpay_order_id}`);
         return data.data;
+      } catch (err: any) {
+        console.error(`[PaymentGateway] Order creation failed for ${order.freshcart_order_id}:`, err.message);
+        throw err;
       } finally {
         this.orderInFlight.delete(orderKey);
       }
@@ -149,7 +213,9 @@ export class PaymentApiService {
         headers: this.getHeaders(),
         body: JSON.stringify(payload),
       },
-      20000
+      30000,
+      1,
+      1500
     );
 
     const data = await res.json();

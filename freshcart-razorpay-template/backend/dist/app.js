@@ -6,6 +6,8 @@ import { errorHandler } from './middleware/errorHandler.js';
 import { apiLimiter } from './middleware/rateLimitMiddleware.js';
 import { config } from './config/index.js';
 export const app = express();
+// Trust first proxy (Render, Cloudflare, Vercel) for accurate client IP identification and rate limiting
+app.set('trust proxy', 1);
 // Security Headers
 app.use(helmet({
     contentSecurityPolicy: false, // Let frontend load Razorpay script
