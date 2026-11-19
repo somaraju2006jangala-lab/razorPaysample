@@ -10,7 +10,7 @@ services:
       - key: NODE_ENV
         value: production
       - key: PAYMENT_MODE
-        value: test
+        value: live
       - key: RAZORPAY_KEY_ID
         sync: false
       - key: RAZORPAY_KEY_SECRET

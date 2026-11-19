@@ -10,7 +10,7 @@ services:
       - key: NODE_ENV
         value: production
       - key: PAYMENT_MODE
-        value: test
+        value: live
       - key: DATABASE_TYPE
         value: sqlite
       - key: DATABASE_PATH
