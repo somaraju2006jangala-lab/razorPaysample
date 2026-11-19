@@ -52,7 +52,7 @@ export function loadRazorpaySdk(timeoutMs = 15000): Promise<boolean> {
       if (typeof window !== 'undefined' && typeof window.Razorpay === 'function') {
         handleSuccess();
       }
-    }, 80);
+    }, 25);
 
     // Guard timeout
     timeoutTimer = setTimeout(() => {

@@ -79,18 +79,16 @@ export const PaymentSelectionPage: React.FC = () => {
       setError(null);
       setDismissedNotice(false);
 
-      // Stage 1: Preparing secure checkout (reuses preloaded SDK promise)
-      setLoadingStage('preparing');
-      await loadRazorpaySdk().catch((err) => {
-        console.warn('Razorpay SDK loader note:', err);
-        return false;
-      });
-
-      if (!isMountedRef.current) return;
-
-      // Stage 2: Creating payment order on server
+      // Stage 1: Creating payment order on server while ensuring Razorpay SDK is ready in parallel
       setLoadingStage('creating_order');
-      const orderResponse = await PaymentApiService.createOrder(order);
+
+      const [orderResponse] = await Promise.all([
+        PaymentApiService.createOrder(order),
+        loadRazorpaySdk().catch((err) => {
+          console.warn('Razorpay SDK loader note:', err);
+          return false;
+        }),
+      ]);
 
       if (!isMountedRef.current) return;
 
@@ -102,7 +100,7 @@ export const PaymentSelectionPage: React.FC = () => {
         return;
       }
 
-      // Stage 3: Opening Razorpay Standard Checkout
+      // Stage 2: Opening Razorpay Standard Checkout
       setLoadingStage('opening_razorpay');
 
       // Verify Razorpay constructor is present

@@ -146,8 +146,8 @@ export class PaymentApiService {
   }
 
   /**
-   * Creates or retrieves a Razorpay order with cold-start tolerance, retry logic, and idempotency protection.
-   * Does NOT create duplicate orders because the backend identifies existing orders by freshcart_order_id.
+   * Creates or retrieves a Razorpay order with cold-start tolerance and idempotency protection.
+   * Does NOT silently retry multiple times to prevent duplicate transactions.
    */
   static async createOrder(order: OrderDetails): Promise<RazorpayOrderResponse> {
     const orderKey = `${order.freshcart_order_id}_${order.total_payable}`;
@@ -160,8 +160,7 @@ export class PaymentApiService {
     const orderPromise = (async () => {
       try {
         console.log(`[PaymentGateway] Initiating payment order for ${order.freshcart_order_id} (Amount: ₹${order.total_payable})...`);
-        // 55s timeout per attempt with 2 retries (up to 3 attempts total)
-        // Accommodates Render 40-50s cold start while preventing duplicate order creation
+        // 45s single timeout, zero silent retries to prevent duplicate transactions
         const res = await this.fetchWithTimeout(
           `${API_BASE}/orders/create`,
           {
@@ -182,15 +181,24 @@ export class PaymentApiService {
               },
             }),
           },
-          55000,
-          2,
-          2000
+          45000,
+          0,
+          0
         );
 
-        const data = await res.json();
-        if (!res.ok || !data.success) {
-          throw new Error(data.error || 'Failed to initialize payment order');
+        let data: any = null;
+        try {
+          data = await res.json();
+        } catch {
+          if (!res.ok) {
+            throw new Error(`Payment gateway server returned HTTP ${res.status} (${res.statusText || 'Server Error'}). Please try again.`);
+          }
         }
+
+        if (!res.ok || !data?.success) {
+          throw new Error(data?.error || `Failed to initialize payment order (HTTP ${res.status}). Please try again.`);
+        }
+
         console.log(`[PaymentGateway] Order initialized successfully: ${data.data.razorpay_order_id}`);
         return data.data;
       } catch (err: any) {
